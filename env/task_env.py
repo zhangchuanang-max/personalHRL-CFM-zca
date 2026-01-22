@@ -6,6 +6,8 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 from itertools import combinations, product
 import copy
+from matplotlib.lines import Line2D  # <--- 【新增】用于创建自定义图例
+# ...
 
 
 class TaskEnv:
@@ -22,8 +24,10 @@ class TaskEnv:
         self.max_task_size = max_task_size
         self.duration_scale = duration_scale
         self.plot_figure = plot_figure
-        if seed is not None:
-            self.rng = np.random.default_rng(seed)
+        # if seed is not None:
+        #     self.rng = np.random.default_rng(seed)
+        self.rng = np.random.default_rng(seed)
+        self.traits_dim = traits_dim
         self.traits_dim = traits_dim
         self.decision_dim = decision_dim
 
@@ -64,25 +68,61 @@ class TaskEnv:
             choice = np.random.choice(a, size, replace)
         return choice
 
+    # def generate_task(self, tasks_num):
+    #     tasks_ini = self.random_int(0, self.max_task_size, (tasks_num, self.traits_dim))
+    #     while not np.all(np.sum(tasks_ini, axis=1) != 0):
+    #         tasks_ini = self.random_int(0, self.max_task_size, (tasks_num, self.traits_dim))
+    #     # tasks_ini = np.array([[1, 0, 0, 0, 0], [0, 1, 0, 0, 0], [2, 1, 0, 0, 0], [1, 1, 0, 0, 0], [0, 2, 0, 0, 0], [1, 1, 0, 0, 0]])
+    #     return tasks_ini
     def generate_task(self, tasks_num):
-        tasks_ini = self.random_int(0, self.max_task_size, (tasks_num, self.traits_dim))
-        while not np.all(np.sum(tasks_ini, axis=1) != 0):
-            tasks_ini = self.random_int(0, self.max_task_size, (tasks_num, self.traits_dim))
-        # tasks_ini = np.array([[1, 0, 0, 0, 0], [0, 1, 0, 0, 0], [2, 1, 0, 0, 0], [1, 1, 0, 0, 0], [0, 2, 0, 0, 0], [1, 1, 0, 0, 0]])
+        tasks_ini = np.zeros((tasks_num, self.traits_dim))
+        self.task_types = [] # 新增一个列表记录任务类型，用于后面生成位置
+        
+        for i in range(tasks_num):
+            # 设定概率：50% 是 Task 1 (巡检)，30% 是 Task 2 (死锁高发)，20% 是 Task 3 (高危)
+            rand = self.rng.random() if self.rng else np.random.rand()
+            
+            if rand < 0.5: 
+                # Task 1: 仪器状态巡检 [1, 0, 0]
+                tasks_ini[i] = [1, 0, 0]
+                self.task_types.append(1)
+            elif rand < 0.8:
+                # Task 2: 电池更换 [0, 1, 1] (Type 2 + Type 3)
+                tasks_ini[i] = [0, 1, 1]
+                self.task_types.append(2)
+            else:
+                # Task 3: 泄露修复 [1, 1, 1] (全员)
+                tasks_ini[i] = [1, 1, 1]
+                self.task_types.append(3)
+                
         return tasks_ini
 
+
+
+    # def generate_agent(self, species_num):
+    #     # agents_ini = self.random_value(species_num, self.traits_dim) > 0.8
+    #     # while not np.all(np.sum(agents_ini, axis=1) != 0):
+    #     #     agents_ini = self.random_value(species_num, self.traits_dim) > 0.8
+
+    #     agents_ini = self.random_int(0, 2, (species_num, self.traits_dim))
+    #     while not np.all(np.sum(agents_ini, axis=1) != 0) or np.unique(agents_ini, axis=0).shape[0] != species_num:
+    #         agents_ini = self.random_int(0, 2, (species_num, self.traits_dim))
+
+    #     # agents_ini = np.diag(np.ones(self.traits_dim))
+    #     # agents_ini = np.array([[1, 0, 0, 0, 0], [0, 1, 0, 0, 0]])
+    #     return agents_ini
     def generate_agent(self, species_num):
-        # agents_ini = self.random_value(species_num, self.traits_dim) > 0.8
-        # while not np.all(np.sum(agents_ini, axis=1) != 0):
-        #     agents_ini = self.random_value(species_num, self.traits_dim) > 0.8
-
-        agents_ini = self.random_int(0, 2, (species_num, self.traits_dim))
-        while not np.all(np.sum(agents_ini, axis=1) != 0) or np.unique(agents_ini, axis=0).shape[0] != species_num:
-            agents_ini = self.random_int(0, 2, (species_num, self.traits_dim))
-
-        # agents_ini = np.diag(np.ones(self.traits_dim))
-        # agents_ini = np.array([[1, 0, 0, 0, 0], [0, 1, 0, 0, 0]])
-        return agents_ini
+        # 强制定义三种角色的能力向量
+        # Type 1: [1, 0, 0] Inspector
+        # Type 2: [0, 1, 0] Manipulator
+        # Type 3: [0, 0, 1] Sentinel
+        agents_ini = np.array([
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1]
+        ])
+        # 如果 species_num > 3, 可以循环填充或报错，这里假设参数控制为3
+        return agents_ini[:species_num]
 
     def generate_env(self):
         tasks_num = self.random_int(self.tasks_range[0], self.tasks_range[1] + 1)
@@ -97,7 +137,25 @@ class TaskEnv:
 
         depot_loc = self.random_value(species_num, 2)
         cost_ini = [self.random_value(1, 1) for _ in range(species_num)]
-        tasks_loc = self.random_value(tasks_num, 2)
+        #tasks_loc = self.random_value(tasks_num, 2)
+        # 替换原有的 tasks_loc 生成逻辑
+        tasks_loc = np.zeros((tasks_num, 2))
+        
+        for i in range(tasks_num):
+            req_sum = int(np.sum(tasks_ini[i]))
+            
+            if req_sum == 1: # Task 1 -> Zone A (左侧)
+                tasks_loc[i, 0] = self.rng.uniform(0, 0.3)
+                tasks_loc[i, 1] = self.rng.uniform(0, 1.0)
+            elif req_sum == 2: # Task 2 -> Zone B (中间)
+                tasks_loc[i, 0] = self.rng.uniform(0.35, 0.65)
+                tasks_loc[i, 1] = self.rng.uniform(0, 1.0)
+            else: # Task 3 -> Zone C (右侧)
+                tasks_loc[i, 0] = self.rng.uniform(0.7, 1.0)
+                tasks_loc[i, 1] = self.rng.uniform(0, 1.0)
+            
+            # y 轴随机分布
+            tasks_loc[i, 1] = np.random.uniform(0, 1.0)
         tasks_time = self.random_value(tasks_num, 1) * self.duration_scale
 
         task_dic = dict()
@@ -128,6 +186,14 @@ class TaskEnv:
         i = 0
         for s, n in enumerate(agents_species_num):
             species_dict[s] = []
+            # 设定速度差异
+            if s == 0:   # Type 1 自由巡检
+                current_vel = 0.5  # 飞得快
+            elif s == 1: # Type 2 操作机器
+                current_vel = 0.1  # 爬得慢
+            else:        # Type 3 环境感知
+                current_vel = 0.3  # 速度中等
+
             for j in range(n):
                 agent_dic[i] = {'ID': i,
                                 'species': s,
@@ -593,111 +659,132 @@ class TaskEnv:
 
     def plot_animation(self, path, n):
         self.generate_traj()
-        plot_robot_icon = False
-        if plot_robot_icon:
-            drone = plt.imread('env/drone.png')
-            drone_oi = OffsetImage(drone, zoom=0.05)
-
+        plot_robot_icon = False  # 定义缺失变量
+        
+        # 颜色映射
         def get_cmap(n, name='Dark2'):
-            '''
-            Returns a function that maps each index in 0, 1, ..., n-1 to a distinct
-            RGB color; the keyword argument name must be a standard mpl colormap name.
-            '''
             return plt.cm.get_cmap(name, n)
-
         cmap = get_cmap(self.species_num)
-        # Set up the plot
+
         self.stack_trajectory()
         finished_tasks = self.get_matrix(self.task_dic, 'finished')
         finished_rate = np.sum(finished_tasks) / len(finished_tasks)
         gif_len = int(self.current_time/self.dt)
-        fig, ax = plt.subplots(dpi=100)
+
+        # --- 初始化画布 ---
+        fig = plt.figure(figsize=(12, 8))
+        ax = fig.add_subplot(111, aspect='equal')
+        
+        # 绘制分区线
+        ax.axvline(x=3.3, color='gray', linestyle=':', linewidth=2, alpha=0.5)
+        ax.axvline(x=6.6, color='gray', linestyle=':', linewidth=2, alpha=0.5)
+        
+        # 绘制区域文字
+        top_y = 10.5
+        ax.text(1.65, top_y, "Zone A\n(Storage)", ha='center', fontsize=12, fontweight='bold', color='#D62728', alpha=0.8)
+        ax.text(5.0, top_y, "Zone B\n(Energy/High-Risk)", ha='center', fontsize=12, fontweight='bold', color='#FF7F0E', alpha=0.8)
+        ax.text(8.35, top_y, "Zone C\n(Control)", ha='center', fontsize=12, fontweight='bold', color='#9467BD', alpha=0.8)
+
         ax.set_xlim(-0.5, 10.5)
-        ax.set_ylim(-0.5, 10.5)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.set_aspect('equal')
-        plt.subplots_adjust(left=0, right=0.85, top=0.87, bottom=0.02)
-        lines = [ax.plot([], [], color=cmap(a['species']), zorder=0)[0] for a in self.agent_dic.values()]
-        ax.set_title(f'Agents finish {finished_rate * 100}% tasks within {self.current_time:.2f}min.'
-                     f'\nCurrent time is {0:.2f}min')
-        color_map = []
-        for i in range(self.species_num):
-            color_map.append(patches.Patch(color=cmap(i), label='Agent species ' + str(i)))
-        color_map.append(patches.Patch(color='g', label='Finished task'))
-        color_map.append(patches.Patch(color='b', label='Unfinished task'))
-        # red_patch = patches.Patch(color='r', label='Single agent')
-        # yellow_patch = patches.Patch(color='y', label='Two agents')
-        # cyan_patch = patches.Patch(color='c', label='Three agents')
-        # magenta_patch = patches.Patch(color='m', label='>= Four agents')
-        if plot_robot_icon:
-            ax.legend(handles=color_map, bbox_to_anchor=(0.99, 0.7))
-        else:
-            ax.legend(handles=color_map,
-                      bbox_to_anchor=(0.99, 0.7))
-        task_squares = [ax.add_patch(patches.RegularPolygon(xy=(task['location'][0] * 10,
-                                                             task['location'][1] * 10),
-                                                            numVertices=int(task['requirements'].sum()) + 3,
-                                                            radius=0.3, color='b')) for task in self.task_dic.values()]
-        depot_tri = [ax.add_patch(patches.Circle((depot['location'][0] * 10,
-                                                  depot['location'][1] * 10),
-                                                 0.2, color='r')) for depot in self.depot_dic.values()]
-        agent_group = [ax.text(agent['location'][0] * 10, agent['location'][1] * 10, str(agent['ID']),
-                               horizontalalignment='center', verticalalignment='center', fontsize=8) for agent in self.agent_dic.values()]
-        if plot_robot_icon:
-            agent_triangles = []
-            for a in self.agent_dic.values():
-                agent_triangles.append(ax.add_artist(AnnotationBbox(drone_oi, (self.depot_dic[a['species']]['location'][0] * 10,
-                                                     self.depot_dic[a['species']]['location'][1] * 10),
-                                       frameon=False)))
-        else:
-            agent_triangles = [ax.add_patch(patches.RegularPolygon(xy=(self.depot_dic[a['species']]['location'][0] * 10,
-                                                                       self.depot_dic[a['species']]['location'][1] * 10), numVertices=3,
-                                                                   radius=0.2, color=cmap(a['species'])))
-                               for a in self.agent_dic.values()]
+        ax.set_ylim(-0.5, 11.5)
+        ax.axis('off') # 隐藏坐标轴，更美观
 
-        # Define the update function for the animation
+        # 初始化线条
+        lines = [ax.plot([], [], color=cmap(a['species']), alpha=0.6, linewidth=1)[0] for a in self.agent_dic.values()]
+
+        # 绘制基地 (黑色方块)
+        for d in self.depot_dic.values():
+            ax.add_patch(patches.Rectangle(
+                xy=(d['location'][0]*10-0.25, d['location'][1]*10-0.25),
+                width=0.5, height=0.5, color='black', alpha=0.7, zorder=5
+            ))
+
+        # 绘制任务点 (保存引用以便 update 更新)
+        task_patches = {}
+        for task in self.task_dic.values():
+            req_sum = int(task['requirements'].sum())
+            # 颜色映射：T1红, T2橙, T3紫
+            if req_sum == 1: c = '#D62728' # Red
+            elif req_sum == 2: c = '#FF7F0E' # Orange
+            else: c = '#9467BD' # Purple
+            
+            # 形状：4/5/6边形
+            patch = ax.add_patch(patches.RegularPolygon(
+                xy=(task['location'][0]*10, task['location'][1]*10),
+                numVertices=req_sum + 3,
+                radius=0.35,
+                facecolor=c,
+                edgecolor='black',
+                linewidth=0.8,
+                alpha=0.9,
+                zorder=10 # 保证任务在最上层
+            ))
+            task_patches[task['ID']] = patch
+
+        # 初始化机器人 (三角形)
+        agent_patches = []
+        agent_texts = []
+        for a in self.agent_dic.values():
+            start_loc = self.depot_dic[a['species']]['location']
+            # 机器人图标
+            tri = ax.add_patch(patches.RegularPolygon(
+                xy=(start_loc[0]*10, start_loc[1]*10),
+                numVertices=3, radius=0.3, color=cmap(a['species']), zorder=20
+            ))
+            agent_patches.append(tri)
+            # 机器人ID
+            txt = ax.text(start_loc[0]*10, start_loc[1]*10, str(a['ID']),
+                          ha='center', va='center', fontsize=7, color='white', fontweight='bold', zorder=21)
+            agent_texts.append(txt)
+
+        # 图例 (Legend)
+        legend_elements = [
+            Line2D([0], [0], color='gray', linestyle=':', label='Zone Boundary'),
+            Line2D([0], [0], marker='s', color='w', markerfacecolor='#D62728', label='Task 1 (Insp)', markersize=10),
+            Line2D([0], [0], marker='p', color='w', markerfacecolor='#FF7F0E', label='Task 2 (Maint)', markersize=10),
+            Line2D([0], [0], marker='h', color='w', markerfacecolor='#9467BD', label='Task 3 (Emerg)', markersize=10),
+            Line2D([0], [0], marker='^', color='w', markerfacecolor=cmap(0), label='Type 1 Robot', markersize=10),
+            Line2D([0], [0], marker='^', color='w', markerfacecolor=cmap(1), label='Type 2 Robot', markersize=10),
+            Line2D([0], [0], marker='^', color='w', markerfacecolor=cmap(2), label='Type 3 Robot', markersize=10),
+        ]
+        ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1.0, 1.0))
+
+        # --- 动画更新逻辑 ---
         def update(frame):
-            ax.set_title(f'Agents finish {finished_rate * 100}% tasks within {self.current_time:.2f}min.'
-                         f'\nCurrent time is {frame * self.dt:.2f}min')
-            pos = np.round([agent['trajectory'][frame, 0:2] for agent in self.agent_dic.values()], 4)
-            unq, count = np.unique(pos, axis=0, return_counts=True)
-            for agent in self.agent_dic.values():
-                repeats = int(count[np.argwhere(np.all(unq == np.round(agent['trajectory'][frame, 0:2], 4), axis=1))])
-                agent_triangles[agent['ID']].xy = tuple(agent['trajectory'][frame, 0:2] * 10)
-                agent_group[agent['ID']].set_position(tuple(agent['trajectory'][frame, 0:2] * 10))
-                agent_group[agent['ID']].set_text(str(repeats))
-                if plot_robot_icon:
-                    agent_triangles[agent['ID']].xyann = tuple(agent['trajectory'][frame, 0:2] * 10)
-                    agent_triangles[agent['ID']].xybox = tuple(agent['trajectory'][frame, 0:2] * 10)
-                # else:
-                #     agent_triangles[agent['ID']].set_color('m' if repeats >= 4 else 'c' if repeats == 3
-                #                                            else 'y' if repeats == 2 else 'r')
-                agent_triangles[agent['ID']].orientation = agent['trajectory'][frame, 2] - np.pi / 2
-                # Add the current frame's data point to the plot for each trajectory
-                if frame > 40:
-                    lines[agent['ID']].set_data(agent['trajectory'][frame - 40:frame + 1, 0] * 10,
-                                                agent['trajectory'][frame - 40:frame + 1, 1] * 10)
-                else:
-                    lines[agent['ID']].set_data(agent['trajectory'][:frame + 1, 0] * 10,
-                                                agent['trajectory'][:frame + 1, 1] * 10)
+            # 标题显示进度
+            ax.set_title(f'Sim Time: {frame * self.dt:.1f} min | Progress: {finished_rate:.0%}', fontsize=14)
+            
+            # 1. 更新机器人位置
+            for i, agent in self.agent_dic.items():
+                if frame < len(agent['trajectory']):
+                    pos = agent['trajectory'][frame]
+                    # 更新三角形
+                    agent_patches[i].xy = (pos[0]*10, pos[1]*10)
+                    agent_patches[i].orientation = pos[2] - np.pi/2
+                    # 更新文字
+                    agent_texts[i].set_position((pos[0]*10, pos[1]*10))
+                    # 更新轨迹线 (只保留最近30帧，避免画面太乱)
+                    start_t = max(0, frame - 30)
+                    lines[i].set_data(
+                        agent['trajectory'][start_t:frame+1, 0]*10, 
+                        agent['trajectory'][start_t:frame+1, 1]*10
+                    )
 
-            for task in self.task_dic.values():
-                if self.reactive_planning:
-                    if task['ID'] > np.clip(frame * self.dt//10 * 20 + 20, 20, 100):
-                        task_squares[task['ID']].set_color('w')
-                        task_squares[task['ID']].set_zorder(0)
-                    else:
-                        task_squares[task['ID']].set_color('b')
-                        task_squares[task['ID']].set_zorder(1)
-                if frame * self.dt >= task['time_finish'] > 0:
-                    task_squares[task['ID']].set_color('g')
-            return lines
+            # 2. 更新任务状态 (只变绿，不通过 set_color('w') 变灰)
+            for t_id, task in self.task_dic.items():
+                # 如果任务完成了，且当前时间超过完成时间 -> 变绿
+                if task['finished'] and (frame * self.dt >= task['time_finish']):
+                    task_patches[t_id].set_facecolor('#2CA02C') # Green
+                    task_patches[t_id].set_edgecolor('#006400') # Dark Green Border
+                # 注意：我们删除了 else: set_color('w') 的逻辑，这样未完成的任务会保持红/橙/紫
 
-        # Set up the animation
-        ani = FuncAnimation(fig, update, frames=gif_len, interval=100, blit=True)
-        ani.save(f'{path}/episode_{n}_{self.current_time:.1f}.gif')
+            return lines + agent_patches + list(task_patches.values())
 
+        # 保存
+        ani = FuncAnimation(fig, update, frames=gif_len, interval=100, blit=False)
+        ani.save(f'{path}/{n}_Time_{self.current_time:.1f}.gif', writer='pillow')
+
+        
     def execute_by_route(self, path='./', method=0, plot_figure=False):
         self.plot_figure = plot_figure
         self.max_waiting_time = 200
@@ -772,11 +859,40 @@ class TaskEnv:
         pd.to_csv(f'{path}time_RL.csv')
 
 
+# if __name__ == '__main__':
+#     import pickle
+#     testSet = 'RALTestSet'
+#     os.mkdir(f'../{testSet}')
+#     for i in range(50):
+#         env = TaskEnv((3, 3), (5, 5), (20, 20), 5, seed=i)
+#         pickle.dump(env, open(f'../{testSet}/env_{i}.pkl', 'wb'))
+#     env.init_state()
 if __name__ == '__main__':
     import pickle
-    testSet = 'RALTestSet'
-    os.mkdir(f'../{testSet}')
+    import os
+
+    # 1. 定义测试集文件夹名字
+    testSet = 'SpaceStationTestSet'
+    
+    # 2. 确保路径是在当前目录下 (去掉 ../ 改为 ./)
+    save_path = f'./{testSet}' 
+    
+    # 3. 创建文件夹 (exist_ok=True 防止文件夹已存在时报错)
+    os.makedirs(save_path, exist_ok=True)
+    
+    print(f"正在生成测试集，请稍候...")
+    
     for i in range(50):
-        env = TaskEnv((3, 3), (5, 5), (20, 20), 5, seed=i)
-        pickle.dump(env, open(f'../{testSet}/env_{i}.pkl', 'wb'))
-    env.init_state()
+        # 参数要和 parameters.py 中的 EnvParams 保持一致 (Traits=3)
+        env = TaskEnv(
+            per_species_range=(2, 2), 
+            species_range=(3, 3), 
+            tasks_range=(15, 15), 
+            traits_dim=3, 
+            seed=i
+        )
+        # 保存到指定路径
+        pickle.dump(env, open(f'{save_path}/env_{i}.pkl', 'wb'))
+        
+    print(f"✅ 生成完毕！")
+    print(f"测试集已保存在: {os.path.abspath(save_path)}")

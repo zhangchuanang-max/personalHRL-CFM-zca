@@ -9,7 +9,7 @@ from natsort import natsorted
 
 
 if __name__ == '__main__':
-    folder = 'RALTestSet'
+    folder = 'HeteroMRTA-main\SpaceStationTestSet'
     method = 'greedy10'
     files = natsorted(glob.glob(f'../{folder}/env_*.pkl'), key=lambda y: y.lower())
     perf_metrics = {'success_rate':[], 'makespan': [], 'time_cost':[], 'waiting_time': [], 'travel_dist': [], 'efficiency': []}

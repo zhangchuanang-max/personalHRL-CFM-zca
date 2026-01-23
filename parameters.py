@@ -40,15 +40,19 @@ class TrainParams:
     SAMPLE_SIZE = 200
     PADDING_SIZE = 50
     POMO_SIZE = 10
-    FORCE_MAX_OPEN_TASK = False
+    FORCE_MAX_OPEN_TASK = True
 
 
 class SaverParams:
-    FOLDER_NAME = 'save_1'
+    #FOLDER_NAME = 'save_1'     #原始情况的训练结果
+    #FOLDER_NAME = 'save_ablation_no_seq'    #创新点1的消融实验（看不到队友情况）
+    
+    FOLDER_NAME = 'save_with_cfm'   # 建议命名：save_with_cfm (带有CFM机制) 或 save_innovation2
     MODEL_PATH = f'model/{FOLDER_NAME}'
     TRAIN_PATH = f'train/{FOLDER_NAME}'
     GIFS_PATH = f'gifs/{FOLDER_NAME}'
-    LOAD_MODEL = True
+    LOAD_MODEL = True      #True能加载之前的模型
+    #LOAD_MODEL = False  # 3. 【重置】我们要从头训练一个笨蛋模型，不能加载之前的
     LOAD_FROM = 'best'  # 'best'
     SAVE = True
     SAVE_IMG = True

@@ -28,7 +28,7 @@ NUM_META_AGENT = 1
 GAMMA = 1
 FOLDER_NAME = 'save'
 testSet = 'SpaceStationTestSet'
-model_path = 'model/save_1'
+model_path = 'model/save_with_cfm'
 sampling = False
 max_task = False
 sampling_num = 10 if sampling else 1
@@ -82,7 +82,26 @@ def run_all():
         b.append(r[1])
 
     print(np.mean(b))
-    df.to_csv(f'{testSet}/RL_sampling_{sampling}_{sampling_num}.csv', index=True)
+    #df.to_csv(f'{testSet}/RL_sampling_{sampling}_{sampling_num}.csv', index=True)   #保存的csv文件名字，记得每次跑要修改
+# ==========================================
+    # 【核心修改】指定绝对路径保存结果
+    # ==========================================
+    # 1. 定义目标文件夹 (前面的 r 表示 raw string，解决 Windows 反斜杠转义问题)
+    target_dir = r'D:\集群协同\二辩开题\HeteroMRTA（ours）\HeteroMRTA-main\SpaceStationTestSet'
+    
+    # 2. 自动拼接完整路径
+    # 使用 os.path.join 可以自动处理路径连接符，更安全
+    output_filename = os.path.join(target_dir, 'result_save_with_cfm.csv')
+    
+    # 3. 确保文件夹存在 (防止报错)
+    if not os.path.exists(target_dir):
+        os.makedirs(target_dir)
+        print(f"📂 已自动创建文件夹: {target_dir}")
+
+    # 4. 保存文件
+    df.to_csv(output_filename, index=True)
+    print(f"💾 结果已成功保存至: {output_filename}")
+
 
 if __name__ == "__main__":
     mp.freeze_support()  # 可选，但在 Windows 上更稳

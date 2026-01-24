@@ -26,9 +26,9 @@ USE_GPU_GLOBAL = True
 NUM_GPU = 0
 NUM_META_AGENT = 1
 GAMMA = 1
-FOLDER_NAME = 'save'
-testSet = 'SpaceStationTestSet'
-model_path = 'model/save_with_cfm'
+FOLDER_NAME = '1_23_3task_last_training'
+testSet = 'SpaceStationTestSet/Trap'
+model_path = 'model/1_23_3task_last_training'
 sampling = False
 max_task = False
 sampling_num = 10 if sampling else 1
@@ -87,11 +87,11 @@ def run_all():
     # 【核心修改】指定绝对路径保存结果
     # ==========================================
     # 1. 定义目标文件夹 (前面的 r 表示 raw string，解决 Windows 反斜杠转义问题)
-    target_dir = r'D:\集群协同\二辩开题\HeteroMRTA（ours）\HeteroMRTA-main\SpaceStationTestSet'
+    target_dir = r'D:\集群协同\二辩开题\HeteroMRTA（ours）\HeteroMRTA-main\SpaceStationTestSet\Trap'
     
     # 2. 自动拼接完整路径
     # 使用 os.path.join 可以自动处理路径连接符，更安全
-    output_filename = os.path.join(target_dir, 'result_save_with_cfm.csv')
+    output_filename = os.path.join(target_dir, '1_23_3task_last_training.csv')
     
     # 3. 确保文件夹存在 (防止报错)
     if not os.path.exists(target_dir):

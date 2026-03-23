@@ -21,7 +21,7 @@ class TrainParams:
     USE_GPU = True
     USE_GPU_GLOBAL = True
     NUM_GPU = 1
-    NUM_META_AGENT = 4
+    NUM_META_AGENT = 3
     LR = 1e-5
     GAMMA = 1
     DECAY_STEP = 2e3
@@ -33,7 +33,7 @@ class TrainParams:
     SUMMARY_WINDOW = 8
     DEMON_RATE = 0.5
     IL_DECAY = -1e-5  # -1e-6 700k decay 0.5, -1e-5 70k decay 0.5, -1e-4 7k decay 0.5
-    BATCH_SIZE = 512
+    BATCH_SIZE = 2048
     AGENT_INPUT_DIM = 6 + EnvParams.TRAIT_DIM
     TASK_INPUT_DIM = 5 + 2 * EnvParams.TRAIT_DIM
     EMBEDDING_DIM = 128
@@ -47,18 +47,21 @@ class SaverParams:
     #FOLDER_NAME = 'save_1'     #原始情况的训练结果
     #FOLDER_NAME = 'save_ablation_no_seq'    #创新点1的消融实验（看不到队友情况）
     
-    #FOLDER_NAME = 'save_with_cfm'   # 建议命名：save_with_cfm (带有CFM机制) 或 save_innovation2
-    # 只需修改这一行，所有保存路径会自动同步！
-    FOLDER_NAME = 'save_3_11_FGH_training'  # 比如后续改：'3_12_FGH_ablation'/'3_13_FGH_cfm'
+    FOLDER_NAME = '3_21_new23_training_2'   # 文件夹新保存路径（不要出现中文）
     MODEL_PATH = f'model/{FOLDER_NAME}'
     TRAIN_PATH = f'train/{FOLDER_NAME}'
     GIFS_PATH = f'gifs/{FOLDER_NAME}'
     
-   
-      
+    
     LOAD_MODEL = True     #True能加载之前的模型
     #LOAD_MODEL = False  # 3. 【重置】我们要从头训练一个笨蛋模型，不能加载之前的
-    LOAD_FROM = 'best'  # 'best'
+    
+    # driver和test选不一样的；这个选择是训练中断再次开始的选择，一个完整训练流程里是没有影响的
+    # LOAD_FROM = 'best'    # 【测试test时用】：加载历史最高分的基准模型
+    LOAD_FROM = 'latest'  # 【继续训练时用】：接上刚才中断的最新实时进
+    
+
+
     SAVE = True
     SAVE_IMG = True
     SAVE_IMG_GAP = 1000

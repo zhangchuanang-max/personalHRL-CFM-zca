@@ -53,32 +53,29 @@ class Worker:
                 self.env.current_time = current_time
                 random.shuffle(release_agents[0])
                 finished_task = []
-                while release_agents[0] or release_agents[1]:
-                    agent_id = release_agents[0].pop(0) if release_agents[0] else release_agents[1].pop(0)
+                deferred_agents = []  # 等待队列：被屏蔽的机器人先放这里
+                max_defer_rounds = 3   # 同一个机器人最多 cycle back 3 次
+                defer_count = {}       # 记录每个机器人被 defer 的次数
+
+                while release_agents[0] or release_agents[1] or deferred_agents:
+                    # 优先处理正常释放的机器人
+                    if release_agents[0]:
+                        agent_id = release_agents[0].pop(0)
+                    elif release_agents[1]:
+                        agent_id = release_agents[1].pop(0)
+                    else:
+                        agent_id = deferred_agents.pop(0)  # cycle back!
                     agent = self.env.agent_dic[agent_id]
                     task_info, total_agents, mask = self.convert_torch(self.env.agent_observe(agent_id, max_waiting))
-                    # # =================== 【消融实验最终版 START】 ===================
-                    # # 目的：验证创新点1。
-                    # # 手段：用微小数值替代队友信息。
-                    # # 原理：避免全是0触发 NaN 错误，同时破坏队友信息的有效性。
                     
-                    # if training: # 仅在训练时生效
-                    #     # 1. 创建一个全是 0.000001 的张量 (不是纯0，防止被 Mask 掉)
-                    #     # 这样网络会认为队友都在，但是数值极小，没有任何位置/技能含义
-                    #     masked_agents = torch.ones_like(total_agents) * 1e-6
-                        
-                    #     # 2. 把机器人(agent_id)自己的真实信息填回去
-                    #     # 这样它能看清自己，但是看队友是一团无意义的微弱噪音
-                    #     masked_agents[0, agent_id, :] = total_agents[0, agent_id, :]
-                        
-                    #     # 3. 替换
-                    #     total_agents = masked_agents
-                        
-                    # # =================== 【消融实验最终版 END】 ===================
                     block_flag = mask[0, 1:].all().item()
                     if block_flag and not np.all(self.env.get_matrix(self.env.task_dic, 'feasible_assignment')):
                         agent['no_choice'] = block_flag
-                        continue
+                        # 加入等待队列，等其他机器人决策完再回来
+                        defer_count[agent_id] = defer_count.get(agent_id, 0) + 1
+                        if defer_count[agent_id] <= max_defer_rounds:
+                            deferred_agents.append(agent_id)
+                            continue  # <--- 【修改点】：只有还在等待次数内，才 continue 跳过
                     elif block_flag and np.all(self.env.get_matrix(self.env.task_dic, 'feasible_assignment')) and agent['current_task'] < 0:
                         continue
                     if training:

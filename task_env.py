@@ -200,7 +200,7 @@ class TaskEnv:
                            'time_start': 0,
                            'time_finish': 0,
                            'status': tasks_ini[i, :],
-                           'time': float(tasks_time[i, :]),
+                           'time': float(tasks_time[i, 0]),
                            'sum_waiting_time': 0,
                            'efficiency': 0,
                            'abandoned_agent': [],
@@ -229,7 +229,7 @@ class TaskEnv:
                                 'arrival_time': [0.],
                                 'cost': cost_ini[s],
                                 'travel_time': 0,
-                                'velocity': 0.2,
+                                'velocity': current_vel,
                                 'next_decision': 0,
                                 'depot': depot_loc[s, :],
                                 'travel_dist': 0,
@@ -418,13 +418,104 @@ class TaskEnv:
 
     def get_contributable_task_mask(self, agent_id):
         agent = self.agent_dic[agent_id]
+        agent_species = agent['species']
         contributable_task_mask = np.ones(self.tasks_num, dtype=bool)
         for task in self.task_dic.values():
             if not task['feasible_assignment']:
+                # 检查技能是否匹配
                 ability = np.maximum(np.minimum(task['status'], agent['abilities']), 0.)
                 if ability.sum() > 0:
-                    contributable_task_mask[task['ID']] = False
+                    # 技能匹配，再检查 Zone 是否可达
+                    x = task['location'][0]
+                    zone_ok = True
+                    if 0.0 <= x <= 0.3 and agent_species != 0:
+                        zone_ok = False
+                    elif 0.4 <= x <= 0.7 and agent_species not in [1, 2]:
+                        zone_ok = False
+                    if zone_ok:
+                        contributable_task_mask[task['ID']] = False
         return contributable_task_mask
+
+    def get_zone_access_mask(self, agent_id):
+        """
+        Zone 准入约束掩码
+        - Zone A (x ∈ [0.0, 0.3])：只有 Type 1 (species=0) 可以进入
+        - Zone B (x ∈ [0.4, 0.7])：Type 2 (species=1) 和 Type 3 (species=2) 可以进入
+        - Zone C (x ∈ [0.8, 1.0])：所有类型都可以进入
+        返回: 长度为 tasks_num 的 bool 数组, True 表示"该任务对当前机器人不可达"
+        """
+        agent = self.agent_dic[agent_id]
+        agent_species = agent['species']
+        zone_mask = np.ones(self.tasks_num, dtype=bool)
+
+        for task in self.task_dic.values():
+            if task['feasible_assignment'] or task['finished']:
+                continue  # 已完成/已分配的任务，由其他 mask 处理
+
+            x = task['location'][0]
+
+            if 0.0 <= x <= 0.3:
+                # Zone A：只有 Type 1 (species=0) 可以进入
+                if agent_species == 0:
+                    zone_mask[task['ID']] = False
+            elif 0.4 <= x <= 0.7:
+                # Zone B：Type 2 (species=1) 和 Type 3 (species=2) 可以进入
+                if agent_species in [1, 2]:
+                    zone_mask[task['ID']] = False
+            elif 0.8 <= x <= 1.0:
+                # Zone C：所有类型都可以进入
+                zone_mask[task['ID']] = False
+
+        return zone_mask
+
+    def get_task_capacity_mask(self, agent_id):
+        """
+        任务容量上限掩码
+        一个任务最多能容纳的人数 = 需求向量中非零元素的个数
+        例: [1,0,0] 需要1人, [0,1,1] 需要2人, [1,1,1] 需要3人
+        如果当前 members 数量 >= 需要的人数 → 屏蔽(不能再加人)
+        """
+        capacity_mask = np.ones(self.tasks_num, dtype=bool)
+
+        for task in self.task_dic.values():
+            if task['feasible_assignment'] or task['finished']:
+                continue
+
+            # 需要的最少人数 = 需求向量中非零元素的个数
+            required_people = int(np.sum(task['requirements'] > 0))
+            # 当前已经在做这个任务的人数
+            current_members = len(task['members'])
+
+            if current_members < required_people:
+                capacity_mask[task['ID']] = False  # 还没满，可以加入
+
+        return capacity_mask
+
+    def get_deadline_feasible_mask(self, agent_id):
+        """
+        Deadline 可达性预判掩码
+        在机器人选择任务之前，先算一下"我赶过去来不来得及"
+        最乐观完成时间 = 当前时间 + 行驶时间 + 任务执行时间
+        如果最乐观完成时间 > deadline → 来不及了，别去了
+        """
+        agent = self.agent_dic[agent_id]
+        deadline_mask = np.ones(self.tasks_num, dtype=bool)
+
+        for task in self.task_dic.values():
+            if task['feasible_assignment'] or task['finished']:
+                continue
+
+            # 计算从当前位置到任务位置的行驶时间
+            distance = np.linalg.norm(agent['location'] - task['location'])
+            travel_time = distance / agent['velocity']
+
+            # 最乐观完成时间(假设到了就能开始干)
+            optimistic_finish = self.current_time + travel_time + task['time']
+
+            if optimistic_finish <= task['deadline']:
+                deadline_mask[task['ID']] = False  # 来得及
+
+        return deadline_mask
 
     def get_waiting_tasks(self):
         waiting_tasks = np.ones(self.tasks_num, dtype=bool)
@@ -481,8 +572,8 @@ class TaskEnv:
                 # Agents will wait for the other agents to arrive
                 if (task['status'] <= 0).all():
                     if np.max(arrival) - np.min(arrival) <= self.max_waiting_time:
-                        task['time_start'] = float(np.max(arrival, keepdims=True))
-                        task['time_finish'] = float(np.max(arrival, keepdims=True) + task['time'])
+                        task['time_start'] = float(np.max(arrival))
+                        task['time_finish'] = float(np.max(arrival) + task['time'])
                         task['feasible_assignment'] = True
                         f_task.append(task['ID'])
                     else:
@@ -540,7 +631,9 @@ class TaskEnv:
             agent = self.agent_dic[agent_id]
             task = self.task_dic[task_id]
             if task['feasible_assignment']:
-                return -1, False, []
+                # 任务已经开工了，别去凑热闹，回 depot 等
+                task_id = -1
+                task = self.depot_dic[agent['species']]
         else:
             agent = self.agent_dic[agent_id]
             task = self.depot_dic[agent['species']]
@@ -568,9 +661,21 @@ class TaskEnv:
 
     def agent_observe(self, agent_id, max_waiting=False):
         agent = self.agent_dic[agent_id]
+        # 掩码1: 未完成的任务 → 屏蔽
         mask = self.get_unfinished_task_mask()
+        # 掩码2: 技能不匹配 → 屏蔽
         contributable_mask = self.get_contributable_task_mask(agent_id)
         mask = np.logical_or(mask, contributable_mask)
+        # 掩码3(新增): Zone 准入约束 → 屏蔽不能进入的区域的任务
+        zone_mask = self.get_zone_access_mask(agent_id)
+        mask = np.logical_or(mask, zone_mask)
+        # 掩码4(新增): 任务容量上限 → 屏蔽已经满员的任务
+        capacity_mask = self.get_task_capacity_mask(agent_id)
+        mask = np.logical_or(mask, capacity_mask)
+        # 掩码5(新增): Deadline 可达性 → 屏蔽来不及的任务
+        deadline_mask = self.get_deadline_feasible_mask(agent_id)
+        mask = np.logical_or(mask, deadline_mask)
+        # 掩码6: max_waiting 策略
         if max_waiting:
             waiting_tasks_mask, waiting_agents = self.get_waiting_tasks()
             waiting_len = np.sum(waiting_tasks_mask == 0)
@@ -673,6 +778,8 @@ class TaskEnv:
                 agent['trajectory'].append(np.array([self.depot_dic[agent['species']]['location'][0], self.depot_dic[agent['species']]['location'][1], angle]))
 
     def get_episode_reward(self, max_time=100):
+        if np.isinf(self.current_time) or np.isnan(self.current_time):
+            self.current_time = 200.0  # 强制拉回最大仿真时间
         self.calculate_waiting_time()
         eff = self.get_efficiency()
         
@@ -696,7 +803,8 @@ class TaskEnv:
         # 或者我们直接返回一个特定的 info。但为了兼容旧代码，这里不需要大改返回结构。
         # 只要确保 reward 足够低，RL 就会学乖。
         
-        return final_reward, finished_tasks
+        success_mask = np.array([t['finished'] and not t.get('failed', False) for t in self.task_dic.values()])
+        return final_reward, success_mask
 
     def get_efficiency(self):
         for task in self.task_dic.values():
@@ -732,15 +840,15 @@ class TaskEnv:
         # 绘制分区线
         ax.axvline(x=3.3, color='gray', linestyle=':', linewidth=2, alpha=0.5)
         ax.axvline(x=6.6, color='gray', linestyle=':', linewidth=2, alpha=0.5)
-        
-        # 绘制区域文字
-        top_y = 10.5
-        ax.text(1.65, top_y, "Zone A\n(Storage)", ha='center', fontsize=12, fontweight='bold', color='#D62728', alpha=0.8)
-        ax.text(5.0, top_y, "Zone B\n(Energy/High-Risk)", ha='center', fontsize=12, fontweight='bold', color='#FF7F0E', alpha=0.8)
-        ax.text(8.35, top_y, "Zone C\n(Control)", ha='center', fontsize=12, fontweight='bold', color='#9467BD', alpha=0.8)
 
-        ax.set_xlim(-0.5, 10.5)
-        ax.set_ylim(-0.5, 11.5)
+        # 绘制区域文字 (放到数据区域上方，不遮挡数据)
+        label_y = 11.5  # 数据 y 最高 ~10，标签放到 11.5 完全避开
+        ax.text(1.65, label_y, "Zone A\n(Storage)", ha='center', fontsize=12, fontweight='bold', color='#D62728', alpha=0.8)
+        ax.text(5.0, label_y, "Zone B\n(Energy/High-Risk)", ha='center', fontsize=12, fontweight='bold', color='#FF7F0E', alpha=0.8)
+        ax.text(8.35, label_y, "Zone C\n(Control)", ha='center', fontsize=12, fontweight='bold', color='#9467BD', alpha=0.8)
+
+        ax.set_xlim(-0.5, 14.5)
+        ax.set_ylim(-0.5, 13.5)  # 扩大高度，给标签留空间
         ax.axis('off') # 隐藏坐标轴，更美观
 
         # 初始化线条
@@ -860,23 +968,53 @@ class TaskEnv:
 
     def execute_greedy_action(self, path='./', method=0, plot_figure=False):
         self.plot_figure = plot_figure
+        max_no_progress = 50  # 连续这么多步没进展就推进时间
         while not self.finished and self.current_time < 200:
             release_agents, current_time = self.next_decision()
             self.current_time = current_time
+            agents_processed = 0
             while release_agents[0] or release_agents[1]:
                 agent_id = release_agents[0].pop(0) if release_agents[0] else release_agents[1].pop(0)
                 agent = self.agent_dic[agent_id]
                 tasks_info, agents_info, mask = self.agent_observe(agent_id, max_waiting=True)
+                # 优先选任务，没有任务可选才回 depot
                 dist = np.inf
-                action = None
+                action = 0  # 默认回 depot
                 for task_id, masked in enumerate(mask[0, :]):
-                    if not masked:
-                        dist_ = self.calculate_eulidean_distance(agent, self.task_dic[
-                            task_id - 1]) if task_id - 1 >= 0 else self.calculate_eulidean_distance(agent,
-                                                                                          self.depot_dic[agent['species']])
+                    if not masked and task_id > 0:  # 跳过 depot (index 0)
+                        dist_ = self.calculate_eulidean_distance(agent, self.task_dic[task_id - 1])
                         if dist_ < dist:
                             action = task_id
+                            dist = dist_
+                if action > 0:
+                    target_task = self.task_dic[action - 1]
+                    # 如果任务已经开工了，不要去凑热闹，回 depot
+                    if target_task['feasible_assignment']:
+                        action = 0
                 self.agent_step(agent_id, action, 0)
+                agents_processed += 1
+            
+            # 【关键修复】推进时间，防止无限循环
+            # 如果这一步没有处理任何 agent（所有 agent 都被 block 了），
+            # 强制推进到下一个有意义的时间点
+            if agents_processed == 0:
+                self.task_update()
+                self.agent_update()
+                # 找最近的 deadline 或其他事件
+                next_event = np.inf
+                for task in self.task_dic.values():
+                    if not task['finished'] and not task.get('failed', False):
+                        if task['deadline'] < next_event:
+                            next_event = task['deadline']
+                for agent in self.agent_dic.values():
+                    arrival = agent['arrival_time'][-1] if agent['arrival_time'] else 0
+                    if arrival > self.current_time and arrival < next_event:
+                        next_event = arrival
+                if np.isfinite(next_event) and next_event > self.current_time:
+                    self.current_time = next_event + 0.1
+                else:
+                    break  # 彻底没有事件了，退出
+            
             self.finished = self.check_finished()
         if self.plot_figure:
             self.plot_animation(path, method)
@@ -926,7 +1064,7 @@ if __name__ == '__main__':
     import os
 
     # 1. 定义测试集文件夹名字
-    testSet = 'SpaceStationTestSet'
+    testSet = '3_21_SpaceStationTestSet'
     
     # 2. 确保路径是在当前目录下 (去掉 ../ 改为 ./)
     save_path = f'./{testSet}' 

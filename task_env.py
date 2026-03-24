@@ -161,15 +161,15 @@ class TaskEnv:
             elif req_sum == 2:
                 # Zone B: 中间区域 (0.4 - 0.7)
                 tasks_loc[i, 0] = self.rng.uniform(0.4, 0.7)
-                # 死线: 60s (有点急，贪心算法如果不先做这个，可能也会超时)
-                deadlines.append(60.0) 
+                # 死线:120s (有点急，贪心算法如果不先做这个，可能也会超时)
+                deadlines.append(120.0) 
 
             # 3. Task 3 (困难任务, req_sum == 3)
             else: # req_sum >= 3
                 # Zone C: 最远端 (0.8 - 1.0)
                 tasks_loc[i, 0] = self.rng.uniform(0.8, 1.0)
-                # 死线: 48s (十万火急，必须优先处理)
-                deadlines.append(48.0) 
+                # 死线: 50s (十万火急，必须优先处理)
+                deadlines.append(80.0)   # 原48s -> 改为150s，先让网络学会"去C区"
             
             # Y轴依然随机分布
             tasks_loc[i, 1] = self.rng.uniform(0, 1.0)
@@ -290,8 +290,11 @@ class TaskEnv:
 
     def init_state(self):
         for task in self.task_dic.values():
-            task.update(members=[], cost=[], finished=False, status=task['requirements'],feasible_assignment=False,
-                        time_start=0, time_finish=0, sum_waiting_time=0, efficiency=0, abandoned_agent=[])
+            task.update(members=[], cost=[], finished=False, failed=False,  # ← 加上这个
+                    status=task['requirements'], feasible_assignment=False,
+                    time_start=0, time_finish=0, sum_waiting_time=0, 
+                    efficiency=0, abandoned_agent=[])
+            
         for agent in self.agent_dic.values():
             agent.update(route=[-agent['species'] - 1], location=agent['depot'], contributed=False,
                          next_decision=0, travel_time=0, travel_dist=0, arrival_time=[0.], assigned=False,
@@ -385,13 +388,17 @@ class TaskEnv:
         status = []
         for t in self.task_dic.values():
             travel_time = self.calculate_eulidean_distance(agent, t) / agent['velocity']
+            # 【修改点 1】在末尾追加了 t['location'][0], t['location'][1]
             temp_status = np.hstack([t['status'], t['requirements'], t['time'], travel_time,
-                                     agent['location'] - t['location'], t['feasible_assignment']])
+                                     agent['location'] - t['location'], t['feasible_assignment'],
+                                     t['location'][0], t['location'][1]])
             status.append(temp_status)
+        # 【修改点 2】在 depot 的特征构建末尾追加了 agent['depot'][0], agent['depot'][1]
         status = [np.hstack([np.zeros(self.traits_dim), - np.ones(self.traits_dim), 0,
                              self.calculate_eulidean_distance(agent,
                                                               self.depot_dic[agent['species']])
-                             / agent['velocity'], agent['location'] - agent['depot'], 1])] + status
+                             / agent['velocity'], agent['location'] - agent['depot'], 1,
+                             agent['depot'][0], agent['depot'][1]])] + status
         current_tasks = np.vstack(status)
         return current_tasks
 
@@ -776,35 +783,72 @@ class TaskEnv:
             while time_step < self.current_time:
                 time_step += self.dt
                 agent['trajectory'].append(np.array([self.depot_dic[agent['species']]['location'][0], self.depot_dic[agent['species']]['location'][1], angle]))
-
     def get_episode_reward(self, max_time=100):
         if np.isinf(self.current_time) or np.isnan(self.current_time):
-            self.current_time = 200.0  # 强制拉回最大仿真时间
+            self.current_time = 200.0
         self.calculate_waiting_time()
         eff = self.get_efficiency()
         
-        # 统计成功和失败
         finished_tasks = self.get_matrix(self.task_dic, 'finished')
         failed_tasks = [t.get('failed', False) for t in self.task_dic.values()]
         
         success_count = np.sum(finished_tasks) - np.sum(failed_tasks)
-        fail_count = np.sum(failed_tasks)
         
-        # 【核心修改：奖励函数】
-        # 基础奖励：完工时间越短越好
         base_reward = - self.current_time - eff * 10
         
-        # 惩罚项：死掉一个任务扣 200 分！(迫使RL必须学会保成功率)
-        penalty = fail_count * 200 
+        # 【修改】按任务类型差异化惩罚，C区任务（req_sum=3）罚得更重
+        penalty = 0
+        for task in self.task_dic.values():
+            if task.get('failed', False):
+                req_sum = int(np.sum(task['requirements']))
+                if req_sum == 3:      # C区困难任务
+                    penalty += 500   # 原来200，改为500
+                elif req_sum == 2:    # B区中等任务
+                    penalty += 300
+                else:                 # A区简单任务
+                    penalty += 100
         
         final_reward = base_reward - penalty
         
-        # 注意：为了让外部代码能统计成功率，我们这里的 finished_tasks 需要通过逻辑处理
-        # 或者我们直接返回一个特定的 info。但为了兼容旧代码，这里不需要大改返回结构。
-        # 只要确保 reward 足够低，RL 就会学乖。
-        
-        success_mask = np.array([t['finished'] and not t.get('failed', False) for t in self.task_dic.values()])
+        success_mask = np.array([t['finished'] and not t.get('failed', False) 
+                                for t in self.task_dic.values()])
         return final_reward, success_mask
+    
+    def get_zone_rewards(self):
+        """
+        为 HRL 的 Manager 单独计算各 Zone 的奖励。
+        返回: [zone_a_reward, zone_b_reward, zone_c_reward]
+        """
+        zone_stats = [{'total': 0, 'success': 0, 'fail': 0} for _ in range(3)]
+        
+        for task in self.task_dic.values():
+            x = task['location'][0]
+            # 划分所属 Zone
+            if 0.0 <= x <= 0.3:
+                z_idx = 0
+            elif 0.4 <= x <= 0.7:
+                z_idx = 1
+            else:
+                z_idx = 2
+                
+            zone_stats[z_idx]['total'] += 1
+            if task['finished'] and not task.get('failed', False):
+                zone_stats[z_idx]['success'] += 1
+            elif task.get('failed', False):
+                zone_stats[z_idx]['fail'] += 1
+
+        zone_rewards = [0.0, 0.0, 0.0]
+        penalties = [10, 30, 50]  # 各 Zone 失败扣分权重
+
+        for i in range(3):
+            reward = zone_stats[i]['success'] * 10.0
+            reward -= zone_stats[i]['fail'] * penalties[i]
+            # 额外 Bonus：如果该 Zone 任务不为 0 且全部成功完成
+            if zone_stats[i]['total'] > 0 and zone_stats[i]['success'] == zone_stats[i]['total']:
+                reward += 30.0
+            zone_rewards[i] = reward
+            
+        return zone_rewards
 
     def get_efficiency(self):
         for task in self.task_dic.values():
@@ -943,7 +987,9 @@ class TaskEnv:
             return lines + agent_patches + list(task_patches.values())
 
         # 保存
-        ani = FuncAnimation(fig, update, frames=gif_len, interval=100, blit=False)
+        # 强行抽帧：使用 range(0, gif_len, 5) 意味着每 5 个时间步才画 1 帧
+        # 这样能把 2000 帧压缩到 400 帧，内存占用瞬间降到原来的 20%！
+        ani = FuncAnimation(fig, update, frames=range(0, gif_len, 5), interval=100, blit=False)
         ani.save(f'{path}/{n}_Time_{self.current_time:.1f}.gif', writer='pillow')
 
         
@@ -1064,7 +1110,7 @@ if __name__ == '__main__':
     import os
 
     # 1. 定义测试集文件夹名字
-    testSet = '3_21_SpaceStationTestSet'
+    testSet = '3_24_SpaceStationTestSet'
     
     # 2. 确保路径是在当前目录下 (去掉 ../ 改为 ./)
     save_path = f'./{testSet}' 

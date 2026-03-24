@@ -1,3 +1,7 @@
+import os
+os.environ['OMP_NUM_THREADS'] = '1'  # 强行限制每个 Worker 只能用 1 个底层线程算矩阵
+os.environ['MKL_NUM_THREADS'] = '1'
+
 import copy
 import torch
 import torch.optim as optim
@@ -37,11 +41,16 @@ class Logger(object):
     def write_to_board(self, tensorboard_data, curr_episode):
         tensorboard_data = np.array(tensorboard_data)
         tensorboard_data = list(np.nanmean(tensorboard_data, axis=0))
-        reward, p_l, entropy, grad_norm, success_rate, time, time_cost, waiting, distance, effi = tensorboard_data
+        # 【修改位置5：提取 z_loss 和 t_loss 并记录到 TensorBoard】
+        reward, p_l, entropy, grad_norm, z_loss, t_loss, success_rate, time, time_cost, waiting, distance, effi = tensorboard_data
+        # 【新增】：让终端每次记录时向你汇报当前战况
+        print(f"🚀 [进度汇报] Episode: {curr_episode} | 成功率: {success_rate:.1%} | 奖励Reward: {reward:.0f} | 总Loss: {t_loss:.4f} | Zone Loss: {z_loss:.4f}")
         metrics = {'Loss/Learning Rate': self.lr_decay.get_last_lr()[0],
                    'Loss/Policy Loss': p_l,
                    'Loss/Entropy': entropy,
                    'Loss/Grad Norm': grad_norm,
+                   'Loss/zone_loss': z_loss,          # 【新增记录】
+                   'Loss/total_loss': t_loss,         # 【新增记录】
                    'Loss/Reward': reward,
                    'Perf/Makespan': time,
                    'Perf/Success rate': success_rate,
@@ -158,7 +167,9 @@ def main():
         curr_episode += 1
     test_set = logger.generate_test_set_seed()
     baseline_value = None
-    experience_buffer = {idx:[] for idx in range(7)}
+    
+    # 【注意】在此处将经验池长度扩大到 
+    experience_buffer = {idx:[] for idx in range(9)}
     perf_metrics = {'success_rate': [], 'makespan': [], 'time_cost': [], 'waiting_time': [], 'travel_dist': [], 'efficiency': []}
     training_data = []
 
@@ -193,24 +204,49 @@ def main():
                     global_mask_batch = torch.stack(rollouts[3], dim=0).to(device)  # (batch,1,1)
                     reward_batch = torch.stack(rollouts[4], dim=0).unsqueeze(1).to(device)  # (batch,1,1)
                     index = torch.stack(rollouts[5]).to(device)
+                    # ... 前面的解包保持不变
                     advantage_batch = torch.stack(rollouts[6], dim=0).to(device)  # (batch,1,1)
+                    zone_choice_list = rollouts[7]
+                    zone_choice_batch = torch.cat(zone_choice_list, dim=0).to(device) if len(zone_choice_list) > 0 else None
+                    manager_adv_batch = torch.stack(rollouts[8], dim=0).to(device) # <--- 新增解包
 
-                    # REINFORCE
-                    probs, _ = global_network(task_inputs, agent_inputs, global_mask_batch, index)
+                    # REINFORCE (传入当时的真实 zone_choice_batch 保证前向传播逻辑一致)
+                    probs, zone_probs_batch, _ = global_network(task_inputs, agent_inputs, global_mask_batch, index, fixed_zone_choice=zone_choice_batch)
+                    
                     dist = Categorical(probs)
                     logp = dist.log_prob(action_batch.flatten())
                     entropy = dist.entropy().mean()
-                    policy_loss = - logp * advantage_batch.flatten().detach()
-                    policy_loss = policy_loss.mean()
+                    
+                    # 1. Worker Loss
+                    worker_advantages = advantage_batch.flatten().detach()
+                    worker_loss = - (logp * worker_advantages).mean()
 
-                    loss = policy_loss
+                    # 2. Manager Loss（修改为独立的 Advantage）
+                    if zone_probs_batch is not None and zone_choice_batch is not None:
+                        chosen_zone_prob = torch.sum(zone_probs_batch * zone_choice_batch, dim=-1)
+                        zone_log_probs = torch.log(chosen_zone_prob + 1e-8)  # [batch]
+                        
+                        manager_advantages = manager_adv_batch.flatten().detach()
+                        manager_loss = -torch.mean(manager_advantages * zone_log_probs)
+                        
+                        # 熵正则化（鼓励探索）
+                        zone_entropy = -torch.sum(zone_probs_batch * torch.log(zone_probs_batch + 1e-8), dim=-1)
+                        zone_entropy_bonus = 0.01 * zone_entropy.mean()
+                        manager_loss = manager_loss - zone_entropy_bonus
+                    else:
+                        manager_loss = torch.tensor(0.0, device=worker_loss.device)
+
+                    # 3. 合并总损失 (Manager 的权重系数暂设为 0.5)
+                    total_loss = worker_loss + 0.5 * manager_loss
+
                     global_optimizer.zero_grad()
-
-                    loss.backward()
+                    total_loss.backward()
+                    
                     grad_norm = torch.nn.utils.clip_grad_norm_(global_network.parameters(), max_norm=100, norm_type=2)
                     global_optimizer.step()
 
-                    train_metrics.append([reward_batch.mean().item(), policy_loss.item(), entropy.item(), grad_norm.item()])
+                    # 记录至 TensorBoard
+                    train_metrics.append([reward_batch.mean().item(), worker_loss.item(), entropy.item(), grad_norm.item(), manager_loss.item(), total_loss.item()])
                 lr_decay.step()
 
                 perf_data = []

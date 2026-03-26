@@ -6,8 +6,7 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 from itertools import combinations, product
 import copy
-from matplotlib.lines import Line2D  # <--- 【新增】用于创建自定义图例
-# ...
+from matplotlib.lines import Line2D  
 
 
 class TaskEnv:
@@ -24,21 +23,16 @@ class TaskEnv:
         self.max_task_size = max_task_size
         self.duration_scale = duration_scale
         self.plot_figure = plot_figure
-        # if seed is not None:
-        #     self.rng = np.random.default_rng(seed)
         self.rng = np.random.default_rng(seed)
-        self.traits_dim = traits_dim
         self.traits_dim = traits_dim
         self.decision_dim = decision_dim
 
         self.task_dic, self.agent_dic, self.depot_dic, self.species_dict = self.generate_env()
         self.species_distance_matrix, self.species_neighbor_matrix = self.generate_distance_matrix()
-        # self.species_mask = self.calculate_optimized_ability()
         self.tasks_num = len(self.task_dic)
         self.agents_num = len(self.agent_dic)
         self.species_num = len(self.species_dict['number'])
         self.coalition_matrix = np.zeros((self.agents_num, self.tasks_num))
-        # self.best_route = self.calculate_tsp_route()
 
         self.current_time = 0
         self.dt = 0.1
@@ -75,55 +69,31 @@ class TaskEnv:
         for i in range(tasks_num):
             rand = self.rng.random() if self.rng else np.random.rand()
             
-            # --- 修改开始 ---
-            if rand < 0.2: 
-                # 20% 生成 Task 1 (简单，单人)
+            # --- 陷阱场景：修改任务分布配比 ---
+            if rand < 0.50: 
+                # 50% 生成 Task 1 (简单，单人 - 大量诱饵)
                 tasks_ini[i] = [1, 0, 0] 
                 self.task_types.append(1)
                 
-            elif rand < 0.5: 
-                # 30% 生成 Task 2 (中等，双人) -> 新增！
-                # 假设 Task 2 需要 [0, 1, 1] 或者其他双技能组合，这里为了简单起见
-                # 设定为需要第2和第3个技能 (模拟操作+感知)
+            elif rand < 0.70: 
+                # 20% 生成 Task 2 (中等，双人)
                 tasks_ini[i] = [0, 1, 1] 
                 self.task_types.append(2)
                 
             else:
-                # 50% 生成 Task 3 (困难，三人)
-                # 需要所有技能 [1, 1, 1]
+                # 30% 生成 Task 3 (困难，三人 - 核心陷阱目标)
                 tasks_ini[i] = [1, 1, 1] 
                 self.task_types.append(3)
-            # --- 修改结束 ---
                 
         return tasks_ini
 
-    
-
-
-
-    # def generate_agent(self, species_num):
-    #     # agents_ini = self.random_value(species_num, self.traits_dim) > 0.8
-    #     # while not np.all(np.sum(agents_ini, axis=1) != 0):
-    #     #     agents_ini = self.random_value(species_num, self.traits_dim) > 0.8
-
-    #     agents_ini = self.random_int(0, 2, (species_num, self.traits_dim))
-    #     while not np.all(np.sum(agents_ini, axis=1) != 0) or np.unique(agents_ini, axis=0).shape[0] != species_num:
-    #         agents_ini = self.random_int(0, 2, (species_num, self.traits_dim))
-
-    #     # agents_ini = np.diag(np.ones(self.traits_dim))
-    #     # agents_ini = np.array([[1, 0, 0, 0, 0], [0, 1, 0, 0, 0]])
-    #     return agents_ini
     def generate_agent(self, species_num):
         # 强制定义三种角色的能力向量
-        # Type 1: [1, 0, 0] Inspector
-        # Type 2: [0, 1, 0] Manipulator
-        # Type 3: [0, 0, 1] Sentinel
         agents_ini = np.array([
             [1, 0, 0],
             [0, 1, 0],
             [0, 0, 1]
         ])
-        # 如果 species_num > 3, 可以循环填充或报错，这里假设参数控制为3
         return agents_ini[:species_num]
 
     def generate_env(self):
@@ -139,45 +109,30 @@ class TaskEnv:
 
         depot_loc = self.random_value(species_num, 2)
         cost_ini = [self.random_value(1, 1) for _ in range(species_num)]
-       # ... (在 generate_env 函数内部，找到生成 tasks_loc 的循环) ...
         
-        # 替换原有的位置生成和死线逻辑
         tasks_loc = np.zeros((tasks_num, 2))
         deadlines = [] 
 
         for i in range(tasks_num):
             req_sum = int(np.sum(tasks_ini[i]))
             
-            # --- 修改开始 ---
-            
-            # 1. Task 1 (简单任务, req_sum == 1)
             if req_sum == 1: 
-                # Zone A: 靠近出生点 (0.0 - 0.3)
+                # Zone A: 靠近出生点
                 tasks_loc[i, 0] = self.rng.uniform(0.0, 0.3)
-                # 死线: 200s (完全不急，随便做)
                 deadlines.append(200.0) 
-            
-            # 2. Task 2 (中等任务, req_sum == 2) -> 新增处理逻辑
             elif req_sum == 2:
-                # Zone B: 中间区域 (0.4 - 0.7)
+                # Zone B: 中间区域
                 tasks_loc[i, 0] = self.rng.uniform(0.4, 0.7)
-                # 死线:120s (有点急，贪心算法如果不先做这个，可能也会超时)
-                deadlines.append(120.0) 
-
-            # 3. Task 3 (困难任务, req_sum == 3)
-            else: # req_sum >= 3
-                # Zone C: 最远端 (0.8 - 1.0)
+                deadlines.append(60.0) 
+            else:
+                # Zone C: 最远端
                 tasks_loc[i, 0] = self.rng.uniform(0.8, 1.0)
-                # 死线: 50s (十万火急，必须优先处理)
-                deadlines.append(80.0)   # 原48s -> 改为150s，先让网络学会"去C区"
+                # --- 陷阱场景：极限紧缩的Deadline ---
+                deadlines.append(36.0)
             
             # Y轴依然随机分布
             tasks_loc[i, 1] = self.rng.uniform(0, 1.0)
             
-            # --- 修改结束 ---
-
-
-        
         tasks_time = self.random_value(tasks_num, 1) * self.duration_scale
 
         task_dic = dict()
@@ -189,14 +144,14 @@ class TaskEnv:
 
         for i in range(tasks_num):
             task_dic[i] = {'ID': i,
-                           'requirements': tasks_ini[i, :],  # requirements of the task
-                           'members': [],  # members of the task
-                           'cost': [],  # cost of each agent
-                           'location': tasks_loc[i, :],  # location of the task
-                           'feasible_assignment': False,  # whether the task assignment is feasible
+                           'requirements': tasks_ini[i, :],  
+                           'members': [],  
+                           'cost': [],  
+                           'location': tasks_loc[i, :],  
+                           'feasible_assignment': False,  
                            'finished': False,
-                           'failed': False,       # <--- 【新增】标记是否失败
-                           'deadline': deadlines[i], # <--- 【新增】写入死线
+                           'failed': False,       
+                           'deadline': deadlines[i], 
                            'time_start': 0,
                            'time_finish': 0,
                            'status': tasks_ini[i, :],
@@ -210,7 +165,6 @@ class TaskEnv:
         i = 0
         for s, n in enumerate(agents_species_num):
             species_dict[s] = []
-            # 设定速度差异
             if s == 0:   # Type 1 自由巡检
                 current_vel = 0.5  # 飞得快
             elif s == 1: # Type 2 操作机器
@@ -290,7 +244,7 @@ class TaskEnv:
 
     def init_state(self):
         for task in self.task_dic.values():
-            task.update(members=[], cost=[], finished=False, failed=False,  # ← 加上这个
+            task.update(members=[], cost=[], finished=False, failed=False,  
                     status=task['requirements'], feasible_assignment=False,
                     time_start=0, time_finish=0, sum_waiting_time=0, 
                     efficiency=0, abandoned_agent=[])
@@ -316,10 +270,6 @@ class TaskEnv:
 
     @staticmethod
     def get_matrix(dictionary, key):
-        """
-        :param key: the key to index
-        :param dictionary: the dictionary for key to index
-        """
         key_matrix = []
         for value in dictionary.values():
             key_matrix.append(value[key])
@@ -332,7 +282,6 @@ class TaskEnv:
     def calculate_optimized_ability(self):
         for task in self.task_dic.values():
             task_status = task['status']
-            # find all possible combinations of the group
             in_species_num = self.species_dict['number']
             species_ability = self.species_dict['abilities']
             num_set = [list(range(0, self.max_task_size + 1)) for _ in in_species_num]
@@ -388,12 +337,10 @@ class TaskEnv:
         status = []
         for t in self.task_dic.values():
             travel_time = self.calculate_eulidean_distance(agent, t) / agent['velocity']
-            # 【修改点 1】在末尾追加了 t['location'][0], t['location'][1]
             temp_status = np.hstack([t['status'], t['requirements'], t['time'], travel_time,
                                      agent['location'] - t['location'], t['feasible_assignment'],
                                      t['location'][0], t['location'][1]])
             status.append(temp_status)
-        # 【修改点 2】在 depot 的特征构建末尾追加了 agent['depot'][0], agent['depot'][1]
         status = [np.hstack([np.zeros(self.traits_dim), - np.ones(self.traits_dim), 0,
                              self.calculate_eulidean_distance(agent,
                                                               self.depot_dic[agent['species']])
@@ -429,10 +376,8 @@ class TaskEnv:
         contributable_task_mask = np.ones(self.tasks_num, dtype=bool)
         for task in self.task_dic.values():
             if not task['feasible_assignment']:
-                # 检查技能是否匹配
                 ability = np.maximum(np.minimum(task['status'], agent['abilities']), 0.)
                 if ability.sum() > 0:
-                    # 技能匹配，再检查 Zone 是否可达
                     x = task['location'][0]
                     zone_ok = True
                     if 0.0 <= x <= 0.3 and agent_species != 0:
@@ -444,67 +389,43 @@ class TaskEnv:
         return contributable_task_mask
 
     def get_zone_access_mask(self, agent_id):
-        """
-        Zone 准入约束掩码
-        - Zone A (x ∈ [0.0, 0.3])：只有 Type 1 (species=0) 可以进入
-        - Zone B (x ∈ [0.4, 0.7])：Type 2 (species=1) 和 Type 3 (species=2) 可以进入
-        - Zone C (x ∈ [0.8, 1.0])：所有类型都可以进入
-        返回: 长度为 tasks_num 的 bool 数组, True 表示"该任务对当前机器人不可达"
-        """
         agent = self.agent_dic[agent_id]
         agent_species = agent['species']
         zone_mask = np.ones(self.tasks_num, dtype=bool)
 
         for task in self.task_dic.values():
             if task['feasible_assignment'] or task['finished']:
-                continue  # 已完成/已分配的任务，由其他 mask 处理
+                continue 
 
             x = task['location'][0]
 
             if 0.0 <= x <= 0.3:
-                # Zone A：只有 Type 1 (species=0) 可以进入
                 if agent_species == 0:
                     zone_mask[task['ID']] = False
             elif 0.4 <= x <= 0.7:
-                # Zone B：Type 2 (species=1) 和 Type 3 (species=2) 可以进入
                 if agent_species in [1, 2]:
                     zone_mask[task['ID']] = False
             elif 0.8 <= x <= 1.0:
-                # Zone C：所有类型都可以进入
                 zone_mask[task['ID']] = False
 
         return zone_mask
 
     def get_task_capacity_mask(self, agent_id):
-        """
-        任务容量上限掩码
-        一个任务最多能容纳的人数 = 需求向量中非零元素的个数
-        例: [1,0,0] 需要1人, [0,1,1] 需要2人, [1,1,1] 需要3人
-        如果当前 members 数量 >= 需要的人数 → 屏蔽(不能再加人)
-        """
         capacity_mask = np.ones(self.tasks_num, dtype=bool)
 
         for task in self.task_dic.values():
             if task['feasible_assignment'] or task['finished']:
                 continue
 
-            # 需要的最少人数 = 需求向量中非零元素的个数
             required_people = int(np.sum(task['requirements'] > 0))
-            # 当前已经在做这个任务的人数
             current_members = len(task['members'])
 
             if current_members < required_people:
-                capacity_mask[task['ID']] = False  # 还没满，可以加入
+                capacity_mask[task['ID']] = False  
 
         return capacity_mask
 
     def get_deadline_feasible_mask(self, agent_id):
-        """
-        Deadline 可达性预判掩码
-        在机器人选择任务之前，先算一下"我赶过去来不来得及"
-        最乐观完成时间 = 当前时间 + 行驶时间 + 任务执行时间
-        如果最乐观完成时间 > deadline → 来不及了，别去了
-        """
         agent = self.agent_dic[agent_id]
         deadline_mask = np.ones(self.tasks_num, dtype=bool)
 
@@ -512,15 +433,13 @@ class TaskEnv:
             if task['feasible_assignment'] or task['finished']:
                 continue
 
-            # 计算从当前位置到任务位置的行驶时间
             distance = np.linalg.norm(agent['location'] - task['location'])
             travel_time = distance / agent['velocity']
 
-            # 最乐观完成时间(假设到了就能开始干)
             optimistic_finish = self.current_time + travel_time + task['time']
 
             if optimistic_finish <= task['deadline']:
-                deadline_mask[task['ID']] = False  # 来得及
+                deadline_mask[task['ID']] = False 
 
         return deadline_mask
 
@@ -558,25 +477,19 @@ class TaskEnv:
 
     def task_update(self):
         f_task = []
-        # check each task status and whether it is finished
         for task in self.task_dic.values():
-            # 如果已经结束或失败，跳过
             if task['finished'] or task.get('failed', False):
                 continue
             
-            # 【核心修改：超时判决】
-            # 如果当前时间 > 截止时间，且任务还没开始干活 -> 判失败！
             if self.current_time > task['deadline'] and not task['feasible_assignment']:
-                task['failed'] = True   # 标记失败
-                task['finished'] = True # 逻辑上结束了（虽然没做完）
-                # 可选：打印日志让你看到贪心算法是怎么死的
-                # print(f"❌ Task {task['ID']} FAILED at {self.current_time:.1f}s (Deadline: {task['deadline']})")
+                task['failed'] = True   
+                task['finished'] = True 
                 continue
+                
             if not task['feasible_assignment']:
                 abilities = self.get_abilities(task['members'])
                 arrival = np.array([self.get_arrival_time(member, task['ID']) for member in task['members']])
-                task['status'] = task['requirements'] - abilities  # update task status
-                # Agents will wait for the other agents to arrive
+                task['status'] = task['requirements'] - abilities  
                 if (task['status'] <= 0).all():
                     if np.max(arrival) - np.min(arrival) <= self.max_waiting_time:
                         task['time_start'] = float(np.max(arrival))
@@ -599,7 +512,6 @@ class TaskEnv:
                 if self.current_time >= task['time_finish']:
                     task['finished'] = True
 
-        # check depot status
         for depot in self.depot_dic.values():
             for member in depot['members']:
                 if self.current_time >= self.get_arrival_time(member, depot['ID']) and np.all(self.get_matrix(self.task_dic, 'feasible_assignment')):
@@ -626,19 +538,11 @@ class TaskEnv:
         return release_agents, next_decision
 
     def agent_step(self, agent_id, task_id, decision_step):
-        """
-        :param agent_id: the id of agent
-        :param task_id: the id of task
-        :param decision_step: the decision step of the agent
-        :return: end_episode, finished_tasks
-        """
-        #  choose any task
         task_id = task_id - 1
         if task_id != -1:
             agent = self.agent_dic[agent_id]
             task = self.task_dic[task_id]
             if task['feasible_assignment']:
-                # 任务已经开工了，别去凑热闹，回 depot 等
                 task_id = -1
                 task = self.depot_dic[agent['species']]
         else:
@@ -655,7 +559,6 @@ class TaskEnv:
         else:
             current_time = self.current_time
         agent['arrival_time'] += [current_time + travel_time]
-        # calculate the angle from current location to next location
         agent['location'] = task['location']
         agent['decision_step'] = decision_step
         agent['no_choice'] = False
@@ -668,31 +571,21 @@ class TaskEnv:
 
     def agent_observe(self, agent_id, max_waiting=False):
         agent = self.agent_dic[agent_id]
-        # 掩码1: 未完成的任务 → 屏蔽
         mask = self.get_unfinished_task_mask()
-        # 掩码2: 技能不匹配 → 屏蔽
         contributable_mask = self.get_contributable_task_mask(agent_id)
         mask = np.logical_or(mask, contributable_mask)
-        # 掩码3(新增): Zone 准入约束 → 屏蔽不能进入的区域的任务
         zone_mask = self.get_zone_access_mask(agent_id)
         mask = np.logical_or(mask, zone_mask)
-        # 掩码4(新增): 任务容量上限 → 屏蔽已经满员的任务
         capacity_mask = self.get_task_capacity_mask(agent_id)
         mask = np.logical_or(mask, capacity_mask)
-        # 掩码5(新增): Deadline 可达性 → 屏蔽来不及的任务
         deadline_mask = self.get_deadline_feasible_mask(agent_id)
         mask = np.logical_or(mask, deadline_mask)
-        # 掩码6: max_waiting 策略
         if max_waiting:
             waiting_tasks_mask, waiting_agents = self.get_waiting_tasks()
             waiting_len = np.sum(waiting_tasks_mask == 0)
             if waiting_len > 5:
                 mask = np.logical_or(mask, waiting_tasks_mask)
         mask = np.insert(mask, 0, False)
-        # if mask.all():
-        #     mask = np.insert(mask, 0, False)
-        # else:
-        #     mask = np.insert(mask, 0, True)
         agents_info = np.expand_dims(self.get_current_agent_status(agent), axis=0)
         tasks_info = np.expand_dims(self.get_current_task_status(agent), axis=0)
         mask = np.expand_dims(mask, axis=0)
@@ -723,7 +616,6 @@ class TaskEnv:
     def check_finished(self):
         self.task_update()
         decision_agents, current_time = self.next_decision()
-        # dead_lock = self.check_dead_lock()
         if len(decision_agents[0]) + len(decision_agents[1]) == 0:
             self.current_time = current_time
             finished = np.all(self.get_matrix(self.agent_dic, 'returned')) and np.all(self.get_matrix(self.task_dic, 'finished'))
@@ -733,7 +625,6 @@ class TaskEnv:
 
     def generate_traj(self):
         for agent in self.agent_dic.values():
-            # save the location of the agent as trajectory
             time_step = 0
             angle = 0
             for i in range(1, len(agent['route'])):
@@ -783,6 +674,7 @@ class TaskEnv:
             while time_step < self.current_time:
                 time_step += self.dt
                 agent['trajectory'].append(np.array([self.depot_dic[agent['species']]['location'][0], self.depot_dic[agent['species']]['location'][1], angle]))
+                
     def get_episode_reward(self, max_time=100):
         if np.isinf(self.current_time) or np.isnan(self.current_time):
             self.current_time = 200.0
@@ -791,65 +683,28 @@ class TaskEnv:
         
         finished_tasks = self.get_matrix(self.task_dic, 'finished')
         failed_tasks = [t.get('failed', False) for t in self.task_dic.values()]
+        total_tasks = len(self.task_dic)
+        fail_count = np.sum(failed_tasks)
         
-        success_count = np.sum(finished_tasks) - np.sum(failed_tasks)
+        # 【核心改动】归一化奖励到合理范围
+        # 时间项：归一化到[0, 1]，然后乘以-10，范围约[-10, 0]
+        time_penalty = -(self.current_time / max_time) * 10.0
         
-        base_reward = - self.current_time - eff * 10
+        # 效率项：限制在[-5, 0]
+        eff_penalty = -min(eff, 5.0)
         
-        # 【修改】按任务类型差异化惩罚，C区任务（req_sum=3）罚得更重
-        penalty = 0
-        for task in self.task_dic.values():
-            if task.get('failed', False):
-                req_sum = int(np.sum(task['requirements']))
-                if req_sum == 3:      # C区困难任务
-                    penalty += 500   # 原来200，改为500
-                elif req_sum == 2:    # B区中等任务
-                    penalty += 300
-                else:                 # A区简单任务
-                    penalty += 100
+        # 失败项：按失败比例惩罚，范围[-10, 0]
+        fail_ratio = fail_count / max(total_tasks, 1)
+        fail_penalty = -fail_ratio * 10.0
         
-        final_reward = base_reward - penalty
+        final_reward = time_penalty + eff_penalty + fail_penalty
+        # 最终reward范围大约在[-25, 0]之间，不会出现-2000的极端值
         
         success_mask = np.array([t['finished'] and not t.get('failed', False) 
                                 for t in self.task_dic.values()])
         return final_reward, success_mask
+
     
-    def get_zone_rewards(self):
-        """
-        为 HRL 的 Manager 单独计算各 Zone 的奖励。
-        返回: [zone_a_reward, zone_b_reward, zone_c_reward]
-        """
-        zone_stats = [{'total': 0, 'success': 0, 'fail': 0} for _ in range(3)]
-        
-        for task in self.task_dic.values():
-            x = task['location'][0]
-            # 划分所属 Zone
-            if 0.0 <= x <= 0.3:
-                z_idx = 0
-            elif 0.4 <= x <= 0.7:
-                z_idx = 1
-            else:
-                z_idx = 2
-                
-            zone_stats[z_idx]['total'] += 1
-            if task['finished'] and not task.get('failed', False):
-                zone_stats[z_idx]['success'] += 1
-            elif task.get('failed', False):
-                zone_stats[z_idx]['fail'] += 1
-
-        zone_rewards = [0.0, 0.0, 0.0]
-        penalties = [10, 30, 50]  # 各 Zone 失败扣分权重
-
-        for i in range(3):
-            reward = zone_stats[i]['success'] * 10.0
-            reward -= zone_stats[i]['fail'] * penalties[i]
-            # 额外 Bonus：如果该 Zone 任务不为 0 且全部成功完成
-            if zone_stats[i]['total'] > 0 and zone_stats[i]['success'] == zone_stats[i]['total']:
-                reward += 30.0
-            zone_rewards[i] = reward
-            
-        return zone_rewards
-
     def get_efficiency(self):
         for task in self.task_dic.values():
             if task['feasible_assignment']:
@@ -858,6 +713,35 @@ class TaskEnv:
                 task['efficiency'] = 10
         efficiency = np.mean(self.get_matrix(self.task_dic, 'efficiency'))
         return efficiency
+    
+    # === 在 get_efficiency 方法之后新增以下方法 ===
+    def get_zone_completion_bonus(self):
+        zone_stats = [{'total': 0, 'success': 0, 'fail': 0} for _ in range(3)]
+        
+        for task in self.task_dic.values():
+            x = task['location'][0]
+            if 0.0 <= x <= 0.3:
+                z_idx = 0
+            elif 0.4 <= x <= 0.7:
+                z_idx = 1
+            else:
+                z_idx = 2
+            zone_stats[z_idx]['total'] += 1
+            is_failed = task.get('failed', False)
+            is_finished = task['finished']
+            if is_finished and not is_failed:
+                zone_stats[z_idx]['success'] += 1
+            elif is_failed:
+                zone_stats[z_idx]['fail'] += 1
+                
+        bonuses = [0.0, 0.0, 0.0]
+        for i in range(3):
+            total = max(zone_stats[i]['total'], 1)
+            # 【核心改动】用完成率作为奖励，范围固定在[-1, +1]
+            success_rate = zone_stats[i]['success'] / total
+            fail_rate = zone_stats[i]['fail'] / total
+            bonuses[i] = success_rate - fail_rate  # 范围[-1, +1]
+        return bonuses
 
     def stack_trajectory(self):
         for agent in self.agent_dic.values():
@@ -865,9 +749,8 @@ class TaskEnv:
 
     def plot_animation(self, path, n):
         self.generate_traj()
-        plot_robot_icon = False  # 定义缺失变量
+        plot_robot_icon = False 
         
-        # 颜色映射
         def get_cmap(n, name='Dark2'):
             return plt.cm.get_cmap(name, n)
         cmap = get_cmap(self.species_num)
@@ -877,44 +760,36 @@ class TaskEnv:
         finished_rate = np.sum(finished_tasks) / len(finished_tasks)
         gif_len = int(self.current_time/self.dt)
 
-        # --- 初始化画布 ---
         fig = plt.figure(figsize=(12, 8))
         ax = fig.add_subplot(111, aspect='equal')
         
-        # 绘制分区线
         ax.axvline(x=3.3, color='gray', linestyle=':', linewidth=2, alpha=0.5)
         ax.axvline(x=6.6, color='gray', linestyle=':', linewidth=2, alpha=0.5)
 
-        # 绘制区域文字 (放到数据区域上方，不遮挡数据)
-        label_y = 11.5  # 数据 y 最高 ~10，标签放到 11.5 完全避开
+        label_y = 11.5  
         ax.text(1.65, label_y, "Zone A\n(Storage)", ha='center', fontsize=12, fontweight='bold', color='#D62728', alpha=0.8)
         ax.text(5.0, label_y, "Zone B\n(Energy/High-Risk)", ha='center', fontsize=12, fontweight='bold', color='#FF7F0E', alpha=0.8)
         ax.text(8.35, label_y, "Zone C\n(Control)", ha='center', fontsize=12, fontweight='bold', color='#9467BD', alpha=0.8)
 
         ax.set_xlim(-0.5, 14.5)
-        ax.set_ylim(-0.5, 13.5)  # 扩大高度，给标签留空间
-        ax.axis('off') # 隐藏坐标轴，更美观
+        ax.set_ylim(-0.5, 13.5)  
+        ax.axis('off') 
 
-        # 初始化线条
         lines = [ax.plot([], [], color=cmap(a['species']), alpha=0.6, linewidth=1)[0] for a in self.agent_dic.values()]
 
-        # 绘制基地 (黑色方块)
         for d in self.depot_dic.values():
             ax.add_patch(patches.Rectangle(
                 xy=(d['location'][0]*10-0.25, d['location'][1]*10-0.25),
                 width=0.5, height=0.5, color='black', alpha=0.7, zorder=5
             ))
 
-        # 绘制任务点 (保存引用以便 update 更新)
         task_patches = {}
         for task in self.task_dic.values():
             req_sum = int(task['requirements'].sum())
-            # 颜色映射：T1红, T2橙, T3紫
-            if req_sum == 1: c = '#D62728' # Red
-            elif req_sum == 2: c = '#FF7F0E' # Orange
-            else: c = '#9467BD' # Purple
+            if req_sum == 1: c = '#D62728' 
+            elif req_sum == 2: c = '#FF7F0E' 
+            else: c = '#9467BD' 
             
-            # 形状：4/5/6边形
             patch = ax.add_patch(patches.RegularPolygon(
                 xy=(task['location'][0]*10, task['location'][1]*10),
                 numVertices=req_sum + 3,
@@ -923,27 +798,23 @@ class TaskEnv:
                 edgecolor='black',
                 linewidth=0.8,
                 alpha=0.9,
-                zorder=10 # 保证任务在最上层
+                zorder=10 
             ))
             task_patches[task['ID']] = patch
 
-        # 初始化机器人 (三角形)
         agent_patches = []
         agent_texts = []
         for a in self.agent_dic.values():
             start_loc = self.depot_dic[a['species']]['location']
-            # 机器人图标
             tri = ax.add_patch(patches.RegularPolygon(
                 xy=(start_loc[0]*10, start_loc[1]*10),
                 numVertices=3, radius=0.3, color=cmap(a['species']), zorder=20
             ))
             agent_patches.append(tri)
-            # 机器人ID
             txt = ax.text(start_loc[0]*10, start_loc[1]*10, str(a['ID']),
                           ha='center', va='center', fontsize=7, color='white', fontweight='bold', zorder=21)
             agent_texts.append(txt)
 
-        # 图例 (Legend)
         legend_elements = [
             Line2D([0], [0], color='gray', linestyle=':', label='Zone Boundary'),
             Line2D([0], [0], marker='s', color='w', markerfacecolor='#D62728', label='Task 1 (Insp)', markersize=10),
@@ -955,40 +826,28 @@ class TaskEnv:
         ]
         ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1.0, 1.0))
 
-        # --- 动画更新逻辑 ---
         def update(frame):
-            # 标题显示进度
             ax.set_title(f'Sim Time: {frame * self.dt:.1f} min | Progress: {finished_rate:.0%}', fontsize=14)
             
-            # 1. 更新机器人位置
             for i, agent in self.agent_dic.items():
                 if frame < len(agent['trajectory']):
                     pos = agent['trajectory'][frame]
-                    # 更新三角形
                     agent_patches[i].xy = (pos[0]*10, pos[1]*10)
                     agent_patches[i].orientation = pos[2] - np.pi/2
-                    # 更新文字
                     agent_texts[i].set_position((pos[0]*10, pos[1]*10))
-                    # 更新轨迹线 (只保留最近30帧，避免画面太乱)
                     start_t = max(0, frame - 30)
                     lines[i].set_data(
                         agent['trajectory'][start_t:frame+1, 0]*10, 
                         agent['trajectory'][start_t:frame+1, 1]*10
                     )
 
-            # 2. 更新任务状态 (只变绿，不通过 set_color('w') 变灰)
             for t_id, task in self.task_dic.items():
-                # 如果任务完成了，且当前时间超过完成时间 -> 变绿
                 if task['finished'] and (frame * self.dt >= task['time_finish']):
-                    task_patches[t_id].set_facecolor('#2CA02C') # Green
-                    task_patches[t_id].set_edgecolor('#006400') # Dark Green Border
-                # 注意：我们删除了 else: set_color('w') 的逻辑，这样未完成的任务会保持红/橙/紫
+                    task_patches[t_id].set_facecolor('#2CA02C') 
+                    task_patches[t_id].set_edgecolor('#006400') 
 
             return lines + agent_patches + list(task_patches.values())
 
-        # 保存
-        # 强行抽帧：使用 range(0, gif_len, 5) 意味着每 5 个时间步才画 1 帧
-        # 这样能把 2000 帧压缩到 400 帧，内存占用瞬间降到原来的 20%！
         ani = FuncAnimation(fig, update, frames=range(0, gif_len, 5), interval=100, blit=False)
         ani.save(f'{path}/{n}_Time_{self.current_time:.1f}.gif', writer='pillow')
 
@@ -1014,7 +873,7 @@ class TaskEnv:
 
     def execute_greedy_action(self, path='./', method=0, plot_figure=False):
         self.plot_figure = plot_figure
-        max_no_progress = 50  # 连续这么多步没进展就推进时间
+        max_no_progress = 50  
         while not self.finished and self.current_time < 200:
             release_agents, current_time = self.next_decision()
             self.current_time = current_time
@@ -1023,30 +882,24 @@ class TaskEnv:
                 agent_id = release_agents[0].pop(0) if release_agents[0] else release_agents[1].pop(0)
                 agent = self.agent_dic[agent_id]
                 tasks_info, agents_info, mask = self.agent_observe(agent_id, max_waiting=True)
-                # 优先选任务，没有任务可选才回 depot
                 dist = np.inf
-                action = 0  # 默认回 depot
+                action = 0  
                 for task_id, masked in enumerate(mask[0, :]):
-                    if not masked and task_id > 0:  # 跳过 depot (index 0)
+                    if not masked and task_id > 0:  
                         dist_ = self.calculate_eulidean_distance(agent, self.task_dic[task_id - 1])
                         if dist_ < dist:
                             action = task_id
                             dist = dist_
                 if action > 0:
                     target_task = self.task_dic[action - 1]
-                    # 如果任务已经开工了，不要去凑热闹，回 depot
                     if target_task['feasible_assignment']:
                         action = 0
                 self.agent_step(agent_id, action, 0)
                 agents_processed += 1
             
-            # 【关键修复】推进时间，防止无限循环
-            # 如果这一步没有处理任何 agent（所有 agent 都被 block 了），
-            # 强制推进到下一个有意义的时间点
             if agents_processed == 0:
                 self.task_update()
                 self.agent_update()
-                # 找最近的 deadline 或其他事件
                 next_event = np.inf
                 for task in self.task_dic.values():
                     if not task['finished'] and not task.get('failed', False):
@@ -1059,7 +912,7 @@ class TaskEnv:
                 if np.isfinite(next_event) and next_event > self.current_time:
                     self.current_time = next_event + 0.1
                 else:
-                    break  # 彻底没有事件了，退出
+                    break  
             
             self.finished = self.check_finished()
         if self.plot_figure:
@@ -1096,41 +949,31 @@ class TaskEnv:
         pd = pd.DataFrame(time_tick_stamp)
         pd.to_csv(f'{path}time_RL.csv')
 
-
-# if __name__ == '__main__':
-#     import pickle
-#     testSet = 'RALTestSet'
-#     os.mkdir(f'../{testSet}')
-#     for i in range(50):
-#         env = TaskEnv((3, 3), (5, 5), (20, 20), 5, seed=i)
-#         pickle.dump(env, open(f'../{testSet}/env_{i}.pkl', 'wb'))
-#     env.init_state()
 if __name__ == '__main__':
     import pickle
     import os
 
-    # 1. 定义测试集文件夹名字
-    testSet = '3_24_SpaceStationTestSet'
+    # 1. 定义陷阱测试集文件夹名字
+    testSet = '3_25_单层陷阱测试集'
     
-    # 2. 确保路径是在当前目录下 (去掉 ../ 改为 ./)
-    save_path = f'./{testSet}' 
+    # 2. 确保路径是在当前目录下
+    save_path = f'../{testSet}' 
     
-    # 3. 创建文件夹 (exist_ok=True 防止文件夹已存在时报错)
+    # 3. 创建文件夹
     os.makedirs(save_path, exist_ok=True)
     
-    print(f"正在生成测试集，请稍候...")
+    print(f"正在生成对抗性陷阱测试集，请稍候...")
     
     for i in range(50):
-        # 参数要和 parameters.py 中的 EnvParams 保持一致 (Traits=3)
+        # 强制指定: 每种机器人2个(共6个), 任务数固定25个
         env = TaskEnv(
             per_species_range=(2, 2), 
             species_range=(3, 3), 
-            tasks_range=(15, 15), 
+            tasks_range=(25, 25), 
             traits_dim=3, 
             seed=i
         )
-        # 保存到指定路径
         pickle.dump(env, open(f'{save_path}/env_{i}.pkl', 'wb'))
         
     print(f"✅ 生成完毕！")
-    print(f"测试集已保存在: {os.path.abspath(save_path)}")
+    print(f"陷阱测试集已保存在: {os.path.abspath(save_path)}")

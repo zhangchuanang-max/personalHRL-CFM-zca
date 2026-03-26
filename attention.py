@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F  # <--- 新增的导入
+import torch.nn.functional as F  
 import math
 import numpy as np
 from torch.nn.utils.rnn import pad_sequence
@@ -47,13 +47,6 @@ class SingleHeadAttention(nn.Module):
             param.data.uniform_(-stdv, stdv)
 
     def forward(self, q, h=None, mask=None):
-        """
-                :param q: queries (batch_size, n_query, input_dim)
-                :param h: data (batch_size, graph_size, input_dim)
-                :param mask: mask (batch_size, n_query, graph_size) or viewable as that (i.e. can be 2 dim if n_query == 1)
-                Mask should contain 1 if attention is not possible (i.e. mask is negative adjacency)
-                :return:
-                """
         if h is None:
             h = q
 
@@ -106,13 +99,6 @@ class MultiHeadAttention(nn.Module):
             param.data.uniform_(-stdv, stdv)
 
     def forward(self, q, h=None, mask=None):
-        """
-                :param q: queries (batch_size, n_query, input_dim)
-                :param h: data (batch_size, graph_size, input_dim)
-                :param mask: mask (batch_size, n_query, graph_size) or viewable as that (i.e. can be 2 dim if n_query == 1)
-                Mask should contain 1 if attention is not possible (i.e. mask is negative adjacency)
-                :return:
-                """
         if h is None:
             h = q
 
@@ -133,7 +119,6 @@ class MultiHeadAttention(nn.Module):
 
         if mask is not None:
             mask = mask.view(1, batch_size, -1, target_size).expand_as(U)  # copy for n_heads times
-            # U[mask.bool()] = -np.inf
             U[mask.bool()] = -np.inf
         attention = torch.softmax(U, dim=-1)  # n_heads*batch_size*n_query*targets_size
 
@@ -141,15 +126,12 @@ class MultiHeadAttention(nn.Module):
             attnc = attention.clone()
             attnc[mask.bool()] = 0
             attention = attnc
-        # print(attention)
 
         heads = torch.matmul(attention, V)  # n_heads*batch_size*n_query*value_dim
 
         out = torch.mm(
             heads.permute(1, 2, 0, 3).reshape(-1, self.n_heads * self.value_dim),
-            # batch_size*n_query*n_heads*value_dim
             self.w_out.view(-1, self.embedding_dim)
-            # n_heads*value_dim*embedding_dim
         ).view(batch_size, n_query, self.embedding_dim)
 
         return out  # batch_size*n_query*embedding_dim
@@ -257,7 +239,7 @@ class AttentionNet(nn.Module):
     def __init__(self, agent_input_dim, task_input_dim, embedding_dim):
         super(AttentionNet, self).__init__()
         self.agent_embedding = nn.Linear(agent_input_dim, embedding_dim)
-        self.task_embedding = nn.Linear(task_input_dim, embedding_dim)  # layer for input information
+        self.task_embedding = nn.Linear(task_input_dim, embedding_dim)
         self.fusion = nn.Linear(embedding_dim * 3, embedding_dim)
 
         self.taskEncoder = Encoder(embedding_dim=embedding_dim, n_head=8, n_layer=1)
@@ -266,16 +248,16 @@ class AttentionNet(nn.Module):
         self.agentEncoder = Encoder(embedding_dim=embedding_dim, n_head=8, n_layer=1)
         self.globalDecoder = Decoder(embedding_dim=embedding_dim, n_head=8, n_layer=2)
         self.pointer = SingleHeadAttention(embedding_dim)
-        # self.LSTM = nn.LSTM(embedding_dim, embedding_dim, batch_first=True)
-
+        
         # ========== 上层Zone分类器（Manager） ==========
-        # 输入：全局任务特征 + 全局机器人特征
-        # 输出：3个Zone的优先级分数
         self.zone_classifier = nn.Sequential(
             nn.Linear(embedding_dim * 2, embedding_dim),
             nn.ReLU(),
             nn.Linear(embedding_dim, 3)  # 3个Zone: A, B, C
         )
+        
+        # 初始化时冻结Manager
+        self._force_uniform_manager = True 
 
     def encoding_tasks(self, task_inputs, mask=None):
         task_embedding = self.task_embedding(task_inputs)
@@ -310,24 +292,29 @@ class AttentionNet(nn.Module):
         # ========== HRL Manager: 计算Zone优先级 ==========
         zone_input = torch.cat([h_task_global, h_agent_global], dim=-1)  # [batch, embedding_dim*2]
         zone_logits = self.zone_classifier(zone_input)  # [batch, 3]
-        zone_probs = torch.softmax(zone_logits, dim=-1)  # [batch, 3] (使用torch.softmax避免引入F)
+        zone_probs = torch.softmax(zone_logits, dim=-1)  # [batch, 3]
+
+        batch_size = tasks.shape[0]
+        device = tasks.device
+
+        # 训练早期强制Manager输出均匀分布
+        is_manager_frozen = self.training and getattr(self, '_force_uniform_manager', False)
+        if is_manager_frozen:
+            zone_probs = torch.ones_like(zone_probs) / 3.0  # 均匀分布
 
         # 生成Zone选择
         if fixed_zone_choice is not None:
-            # 【新增】算 Loss 时，强制使用当时 Worker 真实选择的 Zone！
             zone_choice = fixed_zone_choice
         else:
-            # Worker 收集经验时，正常采样
-            if self.training:
+            if is_manager_frozen:
+                zone_choice = F.one_hot(torch.randint(0, 3, (batch_size,), device=device), num_classes=3).float()
+            elif self.training:
                 zone_choice = F.gumbel_softmax(zone_logits, tau=1.0, hard=True)  # [batch, 3]
             else:
                 zone_choice = F.one_hot(zone_logits.argmax(dim=-1), num_classes=3).float()
 
-        # 生成宏观掩码
-        macro_mask = self.generate_macro_mask(tasks, zone_choice)  # [batch, num_tasks+1]
-
-        # 合并宏观掩码和原有掩码 (安全处理张量类型: float -> bool -> bool)
-        final_mask = torch.logical_or(global_mask.bool(), macro_mask)  # 逻辑或：任一掩码为True则屏蔽
+        # 只保留物理约束掩码
+        final_mask = global_mask  
 
         # ========== 下层 Worker: 具体任务分配 ==========
         task_agent_feature = self.crossDecoder1(task_encoding, agents_encoding, None, task_agent_mask)
@@ -335,41 +322,50 @@ class AttentionNet(nn.Module):
         current_state1 = torch.gather(agent_task_feature, 1, index.repeat(1, 1, agent_task_feature.size(2)))
         current_state = self.fusion(torch.cat((current_state1, aggregated_task, aggregated_agents), dim=-1))
         
-        # 使用合并后的掩码 final_mask
         current_state_prime = self.globalDecoder(current_state, task_agent_feature, None, final_mask)
-        probs, logps = self.pointer(current_state_prime, task_agent_feature, mask=final_mask)
         
+        # 获得原始概率和Logit
+        probs, logps = self.pointer(current_state_prime, task_agent_feature, mask=final_mask)
+
+        # =======================================================
+        # 【新增】基于 Zone Choice 的带保底硬掩码逻辑 (软硬结合)
+        # =======================================================
+        
+                # =======================================================
+        # Manager 软引导（温和版本，不做硬掩码）
+        # =======================================================
+        task_x = tasks[:, :, 11]  # [batch, num_tasks+1]
+        
+        # 计算任务属于各Zone的软归属度
+        in_zone_a = torch.sigmoid(10 * (0.3 - task_x)) * torch.sigmoid(10 * (task_x - 0.0))
+        in_zone_b = torch.sigmoid(10 * (0.7 - task_x)) * torch.sigmoid(10 * (task_x - 0.4))
+        in_zone_c = torch.sigmoid(10 * (1.0 - task_x)) * torch.sigmoid(10 * (task_x - 0.8))
+        
+        # 用zone_probs（而非zone_choice）加权，产生连续的偏好信号
+        # zone_probs是softmax后的概率，自带梯度
+        zone_preference = (zone_probs[:, 0:1] * in_zone_a + 
+                          zone_probs[:, 1:2] * in_zone_b + 
+                          zone_probs[:, 2:3] * in_zone_c)  # [batch, num_tasks+1]
+        
+        # 转换为logit空间的偏好加成
+        # 系数控制Manager话语权：冻结期0，正常期1.5
+        if is_manager_frozen:
+            bonus_strength = 0.0
+        else:
+            bonus_strength = 1.5
+        
+        zone_bonus = torch.log(zone_preference + 0.1) * bonus_strength  # +0.1防止log(0)
+        zone_bonus[:, 0] = 0.0  # depot不受影响
+        
+        logps = logps + zone_bonus.unsqueeze(1)
+        probs = torch.softmax(logps, dim=-1)
+
+       
+
         logps = logps.squeeze(1)
         probs = probs.squeeze(1)
 
-        return probs, zone_probs, zone_choice  # 返回任务概率、Zone概率和真实的Zone选择
-
-    def generate_macro_mask(self, task_inputs, zone_choice):
-        batch_size = task_inputs.shape[0]
-        device = task_inputs.device
-        
-        task_x = task_inputs[:, :, 11]  # [batch, num_tasks+1]
-        
-        in_zone_a = (task_x >= 0.0) & (task_x <= 0.3)
-        in_zone_b = (task_x >= 0.4) & (task_x <= 0.7)
-        in_zone_c = (task_x >= 0.8) & (task_x <= 1.0)
-        
-        choice_a = (zone_choice[:, 0] == 1.0).unsqueeze(1)
-        choice_b = (zone_choice[:, 1] == 1.0).unsqueeze(1)
-        choice_c = (zone_choice[:, 2] == 1.0).unsqueeze(1)
-        
-        # 【关键修改】：允许进入的任务 = 选中Zone的任务 OR C区任务（C区始终不完全屏蔽）
-        allowed = (choice_a & in_zone_a) | (choice_b & in_zone_b) | (choice_c & in_zone_c)
-        
-        # 额外：C区任务永远不被Manager屏蔽（高价值任务保底可见）
-        allowed = allowed | in_zone_c
-        
-        macro_mask = ~allowed
-        macro_mask[:, 0] = False  # depot永远不屏蔽
-        
-        return macro_mask
-    
-
+        return probs, zone_probs, zone_choice
 
 def padding_inputs(inputs):
     seq = pad_sequence(inputs, batch_first=False, padding_value=1)

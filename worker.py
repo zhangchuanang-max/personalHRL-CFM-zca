@@ -43,7 +43,7 @@ class Worker:
         self.max_time = EnvParams.MAX_TIME
 
     def run_episode(self, training=True, sample=False, max_waiting=False):
-        buffer_dict = {idx:[] for idx in range(9)}  # 【修改位置1】新增一个key用于存储zone_probs
+        buffer_dict = {idx:[] for idx in range(9)}
         perf_metrics = {}
         current_action_index = 0
         decision_step = 0
@@ -53,36 +53,33 @@ class Worker:
                 self.env.current_time = current_time
                 random.shuffle(release_agents[0])
                 finished_task = []
-                deferred_agents = []  # 等待队列：被屏蔽的机器人先放这里
-                max_defer_rounds = 3   # 同一个机器人最多 cycle back 3 次
-                defer_count = {}       # 记录每个机器人被 defer 的次数
+                deferred_agents = []  
+                max_defer_rounds = 3   
+                defer_count = {}       
 
                 while release_agents[0] or release_agents[1] or deferred_agents:
-                    # 优先处理正常释放的机器人
                     if release_agents[0]:
                         agent_id = release_agents[0].pop(0)
                     elif release_agents[1]:
                         agent_id = release_agents[1].pop(0)
                     else:
-                        agent_id = deferred_agents.pop(0)  # cycle back!
+                        agent_id = deferred_agents.pop(0)
                     agent = self.env.agent_dic[agent_id]
                     task_info, total_agents, mask = self.convert_torch(self.env.agent_observe(agent_id, max_waiting))
                     
                     block_flag = mask[0, 1:].all().item()
                     if block_flag and not np.all(self.env.get_matrix(self.env.task_dic, 'feasible_assignment')):
                         agent['no_choice'] = block_flag
-                        # 加入等待队列，等其他机器人决策完再回来
                         defer_count[agent_id] = defer_count.get(agent_id, 0) + 1
                         if defer_count[agent_id] <= max_defer_rounds:
                             deferred_agents.append(agent_id)
-                            continue  # <--- 【修改点】：只有还在等待次数内，才 continue 跳过
+                            continue 
                     elif block_flag and np.all(self.env.get_matrix(self.env.task_dic, 'feasible_assignment')) and agent['current_task'] < 0:
                         continue
                     if training:
                         task_info, total_agents, mask = self.obs_padding(task_info, total_agents, mask)
                     index = torch.LongTensor([agent_id]).reshape(1, 1, 1).to(self.device)
                     
-                    # 【修改位置2】接收双层输出
                     probs, zone_probs, zone_choice = self.local_net(task_info, total_agents, mask, index)
                     
                     if training:
@@ -103,17 +100,19 @@ class Worker:
                         buffer_dict[1] += task_info
                         buffer_dict[2] += action.unsqueeze(0)
                         buffer_dict[3] += mask
-                        buffer_dict[4] += torch.FloatTensor([[0]]).to(self.device)  # reward
+                        buffer_dict[4] += torch.FloatTensor([[0]]).to(self.device)
                         buffer_dict[5] += index
-                        buffer_dict[6] += torch.FloatTensor([[0]]).to(self.device)  # worker advantage 占位
+                        buffer_dict[6] += torch.FloatTensor([[0]]).to(self.device)
                         buffer_dict[7] += [zone_choice]  
-                        buffer_dict[8] += [torch.FloatTensor([[0]]).to(self.device)] # manager advantage 占位
-                        current_action_index += 1
+                        buffer_dict[8] += [torch.FloatTensor([[0]]).to(self.device)]
+                    current_action_index += 1
                 self.env.finished = self.env.check_finished()
                 decision_step += 1
 
         terminal_reward, finished_tasks = self.env.get_episode_reward(self.max_time)
-        zone_rewards = self.env.get_zone_rewards() # <--- 新增
+        
+        # 【修改点 1】：在此处调用独立的区域结算奖励
+        zone_bonus = self.env.get_zone_completion_bonus()
 
         perf_metrics['success_rate'] = [np.sum(finished_tasks)/len(finished_tasks)]
         perf_metrics['makespan'] = [self.env.current_time]
@@ -121,11 +120,12 @@ class Worker:
         perf_metrics['waiting_time'] = [np.mean(self.env.get_matrix(self.env.agent_dic, 'sum_waiting_time'))]
         perf_metrics['travel_dist'] = [np.sum(self.env.get_matrix(self.env.agent_dic, 'travel_dist'))]
         perf_metrics['efficiency'] = [self.env.get_efficiency()]
-        return terminal_reward, zone_rewards, buffer_dict, perf_metrics # <--- 修改返回值
+        
+        # 【修改点 2】：返回新增的 zone_bonus
+        return terminal_reward, buffer_dict, perf_metrics, zone_bonus
 
     def baseline_test(self):
         self.baseline_env.plot_figure = False
-        perf_metrics = {}
         current_action_index = 0
         start = time.time()
         while not self.baseline_env.finished and self.baseline_env.current_time < self.max_time and current_action_index < 300:
@@ -140,7 +140,7 @@ class Worker:
                     agent = self.baseline_env.agent_dic[agent_id]
                     task_info, total_agents, mask = self.convert_torch(self.baseline_env.agent_observe(agent_id, False))
                     return_flag = mask[0, 1:].all().item()
-                    if return_flag and not np.all(self.baseline_env.get_matrix(self.baseline_env.task_dic, 'feasible_assignment')): ## add condition on returning to depot
+                    if return_flag and not np.all(self.baseline_env.get_matrix(self.baseline_env.task_dic, 'feasible_assignment')):
                         self.baseline_env.agent_dic[agent_id]['no_choice'] = return_flag
                         continue
                     elif return_flag and np.all(self.baseline_env.get_matrix(self.baseline_env.task_dic, 'feasible_assignment')) and agent['current_task'] < 0:
@@ -148,7 +148,6 @@ class Worker:
                     task_info, total_agents, mask = self.obs_padding(task_info, total_agents, mask)
                     index = torch.LongTensor([agent_id]).reshape(1, 1, 1).to(self.device)
                     
-                    # 【修改位置4】接收双层输出
                     probs, zone_probs, zone_choice = self.local_baseline(task_info, total_agents, mask, index)
                     
                     action = torch.argmax(probs, 1)
@@ -161,49 +160,57 @@ class Worker:
 
     def work(self, episode_number):
         baseline_rewards = []
-        zone_rewards_list = [] # <--- 新增
         buffers = []
         metrics = []
+        zone_bonuses_list = []  # 【修改点 3】：用来收集各个 POMO 回合的 Manager 独立奖励
+        
         max_waiting = TrainParams.FORCE_MAX_OPEN_TASK
         for _ in range(TrainParams.POMO_SIZE):
             self.env.init_state()
-            # 接收新增的返回值
-            terminal_reward, zone_rewards, buffer, perf_metrics = self.run_episode(True, False, max_waiting)
+            # 【修改点 4】：接收新增的 zone_bonus
+            terminal_reward, buffer, perf_metrics, zone_bonus = self.run_episode(True, False, max_waiting)
             if terminal_reward is np.nan:
                 max_waiting = True
                 continue
             baseline_rewards.append(terminal_reward)
-            zone_rewards_list.append(zone_rewards) # <--- 收集 zone_rewards
             buffers.append(buffer)
             metrics.append(perf_metrics)
+            zone_bonuses_list.append(zone_bonus) 
             
         baseline_reward = np.nanmean(baseline_rewards)
-        baseline_zone_rewards = np.nanmean(zone_rewards_list, axis=0) # <--- 计算 Zone 的 baseline [3]
+        # 【修改点 5】：计算 3 个 Zone 在当前 POMO 分布中的 Baseline
+        zone_baseline = np.mean(zone_bonuses_list, axis=0)
 
         for idx, buffer in enumerate(buffers):
-            # 计算当前轨迹中，各个 Zone 的 Advantage
-            zone_advs = np.array(zone_rewards_list[idx]) - baseline_zone_rewards 
+            overall_adv = baseline_rewards[idx] - baseline_reward 
+            
+            # 【修改点 6】：计算该轨迹在每个 Zone 的 Advantage，并转化为 Tensor
+            manager_adv = np.array(zone_bonuses_list[idx]) - zone_baseline  # 形状 [3]
+            manager_adv_tensor = torch.tensor(manager_adv, dtype=torch.float32, device=self.device)
             
             for key in buffer.keys():
                 if key == 6:
                     for i in range(len(buffer[key])):
-                        buffer[key][i] += baseline_rewards[idx] - baseline_reward
-                elif key == 4:  # <--- 新增这几行！修复原作者的占位符 Bug
+                        buffer[key][i] += overall_adv
+                elif key == 4:  
                     for i in range(len(buffer[key])):
                         buffer[key][i] += baseline_rewards[idx]
-                elif key == 8: # <--- 新增：填入 Manager 的 Advantage
-                    for i in range(len(buffer[7])): # 遍历该轨迹的每一步
-                        # 找到这一步实际选了哪个 Zone
-                        chosen_zone = buffer[7][i].argmax().item()
-                        # 把对应 Zone 的 Advantage 填进去
-                        buffer[8][i] += zone_advs[chosen_zone]
+                elif key == 8: 
+                    # 【核心修改点 7】：Manager 专属梯度信号注入
+                    for i in range(len(buffer[8])):
+                        # 取出当前决策步 Manager 选择的 Zone (One-hot 格式，形状如 [1, 3])
+                        z_choice = buffer[7][i] 
+                        
+                        # 让选中的 Zone 认领自己的 Advantage (未选中的 Zone 因为 One-hot 为 0，被消除)
+                        # 将乘积求和后 reshape 为 [1, 1] 匹配 buffer 维度
+                        step_manager_adv = (z_choice * manager_adv_tensor).sum().reshape(1, 1)
+                        
+                        buffer[8][i] += step_manager_adv
 
                 if key not in self.experience.keys():
                     self.experience[key] = buffer[key]
                 else:
                     self.experience[key] += buffer[key]
-        # ... 后面的代码保持不变
-        
 
         for metric in metrics:
             for key in metric.keys():
@@ -212,11 +219,9 @@ class Worker:
                 else:
                     self.perf_metrics[key] += metric[key]
 
-        # 【新增】完美通关过滤器：检查是否有失败任务，以及总时间是否达标
         failed_count = sum(1 for t in self.env.task_dic.values() if t.get('failed', False))
         is_perfect_run = (failed_count == 0) and (self.env.current_time <= 100.0)
 
-        # 只有在开启画图，且是“完美通关”的情况下才渲染 GIF
         if self.save_image and is_perfect_run:
             try:
                 self.env.plot_animation(SaverParams.GIFS_PATH, episode_number)
@@ -243,10 +248,7 @@ class Worker:
 
 if __name__ == '__main__':
     device = torch.device('cuda')
-    # torch.manual_seed(9)
-    # checkpoint = torch.load(SaverParams.MODEL_PATH + '/checkpoint.pth')
     localNetwork = AttentionNet(TrainParams.AGENT_INPUT_DIM, TrainParams.TASK_INPUT_DIM, TrainParams.EMBEDDING_DIM).to(device)
-    # localNetwork.load_state_dict(checkpoint['best_model'])
     for i in range(100):
         worker = Worker(1, localNetwork, localNetwork, 0, device=device, seed=i, save_image=False)
         worker.work(i)

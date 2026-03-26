@@ -1,5 +1,5 @@
 import os
-os.environ['OMP_NUM_THREADS'] = '1'  # 强行限制每个 Worker 只能用 1 个底层线程算矩阵
+os.environ['OMP_NUM_THREADS'] = '1'  
 os.environ['MKL_NUM_THREADS'] = '1'
 
 import copy
@@ -8,7 +8,6 @@ import torch.optim as optim
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 import ray
-import os
 import numpy as np
 import random
 
@@ -41,16 +40,14 @@ class Logger(object):
     def write_to_board(self, tensorboard_data, curr_episode):
         tensorboard_data = np.array(tensorboard_data)
         tensorboard_data = list(np.nanmean(tensorboard_data, axis=0))
-        # 【修改位置5：提取 z_loss 和 t_loss 并记录到 TensorBoard】
         reward, p_l, entropy, grad_norm, z_loss, t_loss, success_rate, time, time_cost, waiting, distance, effi = tensorboard_data
-        # 【新增】：让终端每次记录时向你汇报当前战况
         print(f"🚀 [进度汇报] Episode: {curr_episode} | 成功率: {success_rate:.1%} | 奖励Reward: {reward:.0f} | 总Loss: {t_loss:.4f} | Zone Loss: {z_loss:.4f}")
         metrics = {'Loss/Learning Rate': self.lr_decay.get_last_lr()[0],
                    'Loss/Policy Loss': p_l,
                    'Loss/Entropy': entropy,
                    'Loss/Grad Norm': grad_norm,
-                   'Loss/zone_loss': z_loss,          # 【新增记录】
-                   'Loss/total_loss': t_loss,         # 【新增记录】
+                   'Loss/zone_loss': z_loss,          
+                   'Loss/total_loss': t_loss,         
                    'Loss/Reward': reward,
                    'Perf/Makespan': time,
                    'Perf/Success rate': success_rate,
@@ -142,11 +139,15 @@ def main():
     best_perf = -200
     if SaverParams.LOAD_MODEL:
         curr_episode, curr_level, best_perf = logger.load_saved_model()
+        if curr_level is None:
+            curr_level = 0
+            
+        # 如果恢复模型时已经度过了冷启动阶段，直接解冻Manager
+        if curr_episode >= TrainParams.ENABLE_MANAGER_AFTER:
+            global_network._force_uniform_manager = False
 
-    # launch meta agents
     meta_agents = [RLRunner.remote(i) for i in range(TrainParams.NUM_META_AGENT)]
 
-    # get initial weights
     if device != local_device:
         weights = global_network.to(local_device).state_dict()
         baseline_weights = baseline_network.to(local_device).state_dict()
@@ -158,9 +159,7 @@ def main():
     weights_memory = ray.put(weights)
     baseline_weights_memory = ray.put(baseline_weights)
 
-    # launch the first job on each runner
     jobs = []
-
     env_params = logger.generate_env_params(curr_level)
     for i, meta_agent in enumerate(meta_agents):
         jobs.append(meta_agent.training.remote(weights_memory, baseline_weights_memory, curr_episode, env_params))
@@ -168,14 +167,17 @@ def main():
     test_set = logger.generate_test_set_seed()
     baseline_value = None
     
-    # 【注意】在此处将经验池长度扩大到 
     experience_buffer = {idx:[] for idx in range(9)}
     perf_metrics = {'success_rate': [], 'makespan': [], 'time_cost': [], 'waiting_time': [], 'travel_dist': [], 'efficiency': []}
     training_data = []
 
     try:
         while True:
-            # wait for any job to be completed
+            # 【新增】解冻Manager的控制台提醒
+            if curr_episode == TrainParams.ENABLE_MANAGER_AFTER:
+                print(f"\n=============================================\n🔓 [Manager解冻] Episode {curr_episode}: 开始正式训练Manager!\n=============================================\n")
+                global_network._force_uniform_manager = False
+
             done_id, jobs = ray.wait(jobs)
             done_job = ray.get(done_id)[0]
             buffer, metrics, info = done_job
@@ -185,7 +187,6 @@ def main():
             update_done = False
             if len(experience_buffer[0]) >= TrainParams.BATCH_SIZE:
                 train_metrics = []
-                # env_params = logger.generate_env_params(curr_level)
                 while len(experience_buffer[0]) >= TrainParams.BATCH_SIZE:
                     rollouts = {}
                     for k, v in experience_buffer.items():
@@ -198,19 +199,17 @@ def main():
                         for v in experience_buffer.values():
                             del v[:]
 
-                    agent_inputs = torch.stack(rollouts[0], dim=0).to(device)  # (batch,sample_size,2)
-                    task_inputs = torch.stack(rollouts[1], dim=0).to(device)  # (batch,sample_size,k_size)
-                    action_batch = torch.stack(rollouts[2], dim=0).unsqueeze(1).to(device)  # (batch,1,1)
-                    global_mask_batch = torch.stack(rollouts[3], dim=0).to(device)  # (batch,1,1)
-                    reward_batch = torch.stack(rollouts[4], dim=0).unsqueeze(1).to(device)  # (batch,1,1)
+                    agent_inputs = torch.stack(rollouts[0], dim=0).to(device)  
+                    task_inputs = torch.stack(rollouts[1], dim=0).to(device)  
+                    action_batch = torch.stack(rollouts[2], dim=0).unsqueeze(1).to(device)  
+                    global_mask_batch = torch.stack(rollouts[3], dim=0).to(device)  
+                    reward_batch = torch.stack(rollouts[4], dim=0).unsqueeze(1).to(device)  
                     index = torch.stack(rollouts[5]).to(device)
-                    # ... 前面的解包保持不变
-                    advantage_batch = torch.stack(rollouts[6], dim=0).to(device)  # (batch,1,1)
+                    advantage_batch = torch.stack(rollouts[6], dim=0).to(device)  
                     zone_choice_list = rollouts[7]
                     zone_choice_batch = torch.cat(zone_choice_list, dim=0).to(device) if len(zone_choice_list) > 0 else None
-                    manager_adv_batch = torch.stack(rollouts[8], dim=0).to(device) # <--- 新增解包
+                    manager_adv_batch = torch.stack(rollouts[8], dim=0).to(device)
 
-                    # REINFORCE (传入当时的真实 zone_choice_batch 保证前向传播逻辑一致)
                     probs, zone_probs_batch, _ = global_network(task_inputs, agent_inputs, global_mask_batch, index, fixed_zone_choice=zone_choice_batch)
                     
                     dist = Categorical(probs)
@@ -221,31 +220,40 @@ def main():
                     worker_advantages = advantage_batch.flatten().detach()
                     worker_loss = - (logp * worker_advantages).mean()
 
-                    # 2. Manager Loss（修改为独立的 Advantage）
+                    # 2. Manager Loss
                     if zone_probs_batch is not None and zone_choice_batch is not None:
                         chosen_zone_prob = torch.sum(zone_probs_batch * zone_choice_batch, dim=-1)
-                        zone_log_probs = torch.log(chosen_zone_prob + 1e-8)  # [batch]
+                        zone_log_probs = torch.log(chosen_zone_prob + 1e-8)
                         
                         manager_advantages = manager_adv_batch.flatten().detach()
                         manager_loss = -torch.mean(manager_advantages * zone_log_probs)
                         
-                        # 熵正则化（鼓励探索）
                         zone_entropy = -torch.sum(zone_probs_batch * torch.log(zone_probs_batch + 1e-8), dim=-1)
-                        zone_entropy_bonus = 0.01 * zone_entropy.mean()
+                        zone_entropy_bonus = 0.05 * zone_entropy.mean()
                         manager_loss = manager_loss - zone_entropy_bonus
                     else:
                         manager_loss = torch.tensor(0.0, device=worker_loss.device)
 
-                    # 3. 合并总损失 (Manager 的权重系数暂设为 0.5)
-                    total_loss = worker_loss + 0.5 * manager_loss
+                    # 3. 合并总损失（渐进式训练权重控制）
+                    if curr_episode < TrainParams.ENABLE_MANAGER_AFTER:
+                        # 阶段1：只训练Worker，Manager输出均匀分布，不参与Loss
+                        manager_loss = torch.tensor(0.0, device=worker_loss.device)
+                        total_loss = worker_loss
+                    elif curr_episode < TrainParams.ENABLE_MANAGER_AFTER + TrainParams.MANAGER_WARMUP_EPISODES:
+                        # 阶段2：Manager预热期，权重从0.1线性增加到0.5
+                        warmup_progress = (curr_episode - TrainParams.ENABLE_MANAGER_AFTER) / TrainParams.MANAGER_WARMUP_EPISODES
+                        manager_weight = 0.05 + 0.25 * warmup_progress  
+                        total_loss = worker_loss + manager_weight * manager_loss
+                    else:
+                        # 阶段3：正常双层训练
+                        total_loss = worker_loss + 0.3 * manager_loss
 
                     global_optimizer.zero_grad()
                     total_loss.backward()
                     
-                    grad_norm = torch.nn.utils.clip_grad_norm_(global_network.parameters(), max_norm=100, norm_type=2)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(global_network.parameters(), max_norm=10, norm_type=2)
                     global_optimizer.step()
 
-                    # 记录至 TensorBoard
                     train_metrics.append([reward_batch.mean().item(), worker_loss.item(), entropy.item(), grad_norm.item(), manager_loss.item(), total_loss.item()])
                 lr_decay.step()
 
@@ -263,7 +271,6 @@ def main():
                 logger.write_to_board(training_data, curr_episode)
                 training_data = []
 
-            # get the updated global weights
             if update_done:
                 if device != local_device:
                     weights = global_network.to(local_device).state_dict()
@@ -289,13 +296,11 @@ def main():
 
             if TrainParams.EVALUATE:
                 if curr_episode % 1024 == 0:
-                    # stop the training
                     ray.wait(jobs, num_returns=TrainParams.NUM_META_AGENT)
                     for a in meta_agents:
                         ray.kill(a)
                     print('Evaluate baseline model at ', curr_episode)
 
-                    # test the baseline model on the new test set
                     if baseline_value is None:
                         test_agent_list = [RLRunner.remote(metaAgentID=i) for i in range(TrainParams.NUM_META_AGENT)]
                         for _, test_agent in enumerate(test_agent_list):
@@ -317,7 +322,6 @@ def main():
                         for a in test_agent_list:
                             ray.kill(a)
 
-                    # test the current model's performance
                     test_agent_list = [RLRunner.remote(metaAgentID=i) for i in range(TrainParams.NUM_META_AGENT)]
                     for _, test_agent in enumerate(test_agent_list):
                         ray.get(test_agent.set_baseline_weights.remote(weights_memory))
@@ -340,7 +344,6 @@ def main():
 
                     meta_agents = [RLRunner.remote(i) for i in range(TrainParams.NUM_META_AGENT)]
 
-                    # update baseline if the model improved more than 5%
                     print('test value', test_value.mean())
                     print('baseline value', baseline_value.mean())
                     if test_value.mean() > baseline_value.mean():
@@ -361,7 +364,7 @@ def main():
                             print('update test set')
                             baseline_value = None
                             best_perf = test_value.mean()
-                            logger.save_model(curr_episode, None, best_perf)
+                            logger.save_model(curr_episode, curr_level, best_perf)
                     jobs = []
                     for i, meta_agent in enumerate(meta_agents):
                         jobs.append(meta_agent.training.remote(weights_memory, baseline_weights_memory, curr_episode, env_params))
@@ -371,7 +374,6 @@ def main():
         print("CTRL_C pressed. Killing remote workers")
         for a in meta_agents:
             ray.kill(a)
-
 
 if __name__ == "__main__":
     main()
